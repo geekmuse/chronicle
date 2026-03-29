@@ -120,7 +120,7 @@ pub fn handle_import(agent: String, dry_run: bool) -> Result<()> {
 ///
 /// Accepts an explicit `home` path so tests can inject a temporary directory
 /// without touching the real `$HOME`.
-fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
+pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let cfg = config::load(Some(config_path), &CliOverrides::default())
         .context("failed to load configuration")?;
 
@@ -422,7 +422,7 @@ pub fn handle_sync(dry_run: bool, quiet: bool) -> Result<()> {
 ///
 /// `home` is injected so tests can use a temporary directory without touching
 /// the real `$HOME`.
-fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) -> Result<()> {
+pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) -> Result<()> {
     let cfg = config::load(Some(config_path), &CliOverrides::default())
         .context("failed to load configuration")?;
 
@@ -740,7 +740,7 @@ pub fn handle_push(dry_run: bool) -> Result<()> {
 /// Scans each enabled agent's session directory for new or modified `.jsonl`
 /// files, canonicalizes them, merges with the existing repo version at JSONL
 /// entry level, commits, and pushes to remote (§9.1 / §14 outgoing phase).
-fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
+pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let cfg = config::load(Some(config_path), &CliOverrides::default())
         .context("failed to load configuration")?;
 
@@ -1104,7 +1104,7 @@ pub fn handle_pull(dry_run: bool) -> Result<()> {
 /// Fetches from remote, integrates remote changes into the working tree at
 /// JSONL entry level, then de-canonicalizes and materializes all session files
 /// into the local agent session directories (§9.1 / §14 incoming phase).
-fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
+pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let cfg = config::load(Some(config_path), &CliOverrides::default())
         .context("failed to load configuration")?;
 
@@ -1173,26 +1173,29 @@ fn integrate_remote_changes(manager: &git::RepoManager, machine_name: &str) -> R
         Err(_) => return Ok(0), // no remote commits pushed yet
     };
 
-    let remote_commit = remote_ref
-        .peel_to_commit()
-        .context("failed to peel remote ref to commit")?;
-    let remote_tree = remote_commit
-        .tree()
-        .context("failed to get remote commit tree")?;
-
-    // Collect (repo-relative path, blob OID) for all JSONL files in the tree.
-    let mut remote_blobs: Vec<(String, git2::Oid)> = Vec::new();
-    remote_tree
-        .walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-            if entry.kind() == Some(git2::ObjectType::Blob) {
-                let name = entry.name().unwrap_or("");
-                if name.ends_with(".jsonl") {
-                    remote_blobs.push((format!("{root}{name}"), entry.id()));
+    // Collect the remote commit OID and all JSONL blob OIDs from the remote
+    // tree.  We save only Copy values here so all git2 borrows are released
+    // before we do the merge work and final commit.
+    let (remote_commit_oid, remote_blobs): (git2::Oid, Vec<(String, git2::Oid)>) = {
+        let rc = remote_ref
+            .peel_to_commit()
+            .context("failed to peel remote ref to commit")?;
+        let rtree = rc.tree().context("failed to get remote commit tree")?;
+        let mut blobs: Vec<(String, git2::Oid)> = Vec::new();
+        rtree
+            .walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+                if entry.kind() == Some(git2::ObjectType::Blob) {
+                    let name = entry.name().unwrap_or("");
+                    if name.ends_with(".jsonl") {
+                        blobs.push((format!("{root}{name}"), entry.id()));
+                    }
                 }
-            }
-            git2::TreeWalkResult::Ok
-        })
-        .context("failed to walk remote tree")?;
+                git2::TreeWalkResult::Ok
+            })
+            .context("failed to walk remote tree")?;
+        (rc.id(), blobs)
+        // rc, rtree, remote_ref all dropped here
+    };
 
     let mut staged_paths: Vec<PathBuf> = Vec::new();
 
@@ -1250,9 +1253,54 @@ fn integrate_remote_changes(manager: &git::RepoManager, machine_name: &str) -> R
             now.format("%Y-%m-%dT%H:%M:%SZ"),
             changed
         );
-        manager
-            .commit_if_staged(&msg, machine_name)
-            .context("failed to commit pull merge")?;
+
+        // Create a MERGE commit that grafts the remote history onto the local
+        // branch.  Using [local_head, remote_commit] as parents means the new
+        // commit is a descendant of the remote tip, so the subsequent push is
+        // a fast-forward and never gets rejected as non-fast-forward.
+        let mut index = repo
+            .index()
+            .context("failed to open git index for merge commit")?;
+        let tree_oid = index
+            .write_tree()
+            .context("failed to write index tree for merge commit")?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .context("failed to find tree for merge commit")?;
+
+        let time = git2::Time::new(now.timestamp(), 0);
+        let sig = git2::Signature::new(machine_name, "chronicle@local", &time)
+            .context("failed to create git signature for merge commit")?;
+
+        // Re-find the remote commit by its saved OID.
+        let remote_parent = repo
+            .find_commit(remote_commit_oid)
+            .context("failed to find remote commit for merge parent")?;
+
+        // Optional local HEAD parent (absent on an unborn branch / first sync).
+        let local_parent: Option<git2::Commit<'_>> = match repo.head() {
+            Ok(h) => Some(
+                h.peel_to_commit()
+                    .context("failed to peel HEAD to commit")?,
+            ),
+            Err(e)
+                if e.code() == git2::ErrorCode::UnbornBranch
+                    || e.code() == git2::ErrorCode::NotFound =>
+            {
+                None
+            }
+            Err(e) => return Err(anyhow::anyhow!("HEAD error during merge commit: {e}")),
+        };
+
+        let mut parents_owned: Vec<git2::Commit<'_>> = Vec::new();
+        if let Some(lp) = local_parent {
+            parents_owned.push(lp);
+        }
+        parents_owned.push(remote_parent);
+        let parent_refs: Vec<&git2::Commit<'_>> = parents_owned.iter().collect();
+
+        repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parent_refs)
+            .context("failed to create pull merge commit")?;
     }
 
     Ok(changed)
