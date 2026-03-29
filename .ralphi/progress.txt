@@ -1,4 +1,24 @@
 ## Codebase Patterns
+- `merge::entry`: `EntryKey` enum (`Header` | `Entry{entry_type,id}`); `parse_entry(raw)` returns `Option<ParsedEntry>`; `extract_timestamp(value)` checks `timestamp`, `created_at`, `createdAt` fields
+- `merge::set_union::merge_jsonl(remote, remote_path, local, local_path, reporter)` → `MergeOutput { content, malformed, conflicts }`; remote entries populate first (win on collision); prefix verification (§5.4) detects byte-inequivalent common entries
+- `ConflictReporter` trait in `merge::set_union` — `report_prefix_mismatch(file, entry_key, local_raw, remote_raw)`; `NullReporter` is the no-op impl; real ring buffer impl comes in US-008
+- `PrefixConflict { file, entry_key, local_raw, remote_raw }` — one record per divergent common entry; included in `MergeOutput::conflicts`
+- Prefix verification loop: iterate local_entries; if key in remote map AND raws differ → warn + reporter.report + push conflict; remote version stays in map (skip local); if key not in remote map → insert local
+- `MalformedLine { path, line_number, snippet }` — 1-based line, up to 80-char snippet; emitted via `tracing::warn!` and returned in `MergeOutput::malformed`
+- Stable sort tie-break: `Source::Remote = 0`, `Source::Local = 1`, then `original_index` — guarantees deterministic output for equal timestamps
+- `Path::new("x")` is NOT const-stable in current Rust edition; use `fn helper() -> &'static Path { Path::new("x") }` in test constants
+- `#![allow(dead_code)]` needed on both `entry.rs` and `set_union.rs` until US-007/US-015 wire in the merge module
+- `canonicalize_line(line, level)` / `decanonicalize_line(line)` on `TokenRegistry` — content-level L2/L3 dispatch in `src/canon/levels.rs`; returns `Result<String, ChronicleError>`
+- `try_canonicalize_path(s)` — L2: returns `Some(canonical)` only if `s == $HOME` or `s.starts_with($HOME/)` (strict prefix, boundary `/` or EOS); custom tokens applied prefix-only with `break`
+- `try_canonicalize_text(s)` — L3: `replace_in_text` scans globally; custom tokens also applied globally (no `break`)
+- `try_decanonicalize_text(s)` — reverses both L2 and L3; always applied to ALL string values in de-canon (safe because token pattern unlikely to appear naturally)
+- `replace_in_text(text, from, to)` — path-boundary replacement: `from` must be followed by `/` or EOS; prevents partial matches (e.g., `bradmatic2` won't match `bradmatic`); handles multiple occurrences in a single pass
+- `canonical_token_value(path, home, token)` — converts a custom token's raw path value to its canonical storage form (`{{SYNC_HOME}}/Dev` for `/Users/bradmatic/Dev`)
+- `fields::WHITELISTED` — 7 entries per spec §4.3; use `apply_to_whitelisted(obj, fn)` for L2 and `apply_to_all_strings(value, fn)` for L3
+- `L3_WARNING` const in `levels.rs` — must be emitted by CLI commands (US-013, US-014, US-017) at startup when `level >= 3`
+- proptest in `levels.rs` tests: import `use proptest::prelude::*;` inside the `mod tests` block (not at crate root)
+
+
 - `TokenRegistry` in `src/canon/mod.rs` — built via `from_config(&CanonicalizationConfig, &Path)`; exposes `canonicalize_pi_dir`, `canonicalize_claude_dir`, `decanonicalize_pi_dir`, `decanonicalize_claude_dir`
 - Canonicalization order: SYNC_HOME first, custom tokens after (applied to already-canonical form using canonical-encoded token values); de-canon reverses the order
 - `boundary_match(s, prefix)` helper: character after prefix in `s` must be `-` or end-of-string; prevents partial matches (e.g., `/Users/bradmatic2` ≠ `/Users/bradmatic`)
@@ -104,6 +124,49 @@ Corrective Plan: N/A
   - De-canon order (custom tokens first, then SYNC_HOME) ensures that a token like `{{SYNC_PROJECTS}} = {{SYNC_HOME}}/Dev` gets fully expanded back to the local path
 ---
 
+## 2026-03-29 - US-006
+Session: iter-e93c4a03 / loop-26ce4e61 iteration 6
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented JSONL entry parsing (§5.1) and grow-only set merge (§5.2 steps 1/3/4/5)
+- Created src/merge/entry.rs: EntryKey enum, ParsedEntry struct, parse_entry(), extract_timestamp(); 15 unit tests
+- Created src/merge/set_union.rs: merge_jsonl(), MalformedLine, MergeOutput, internal TaggedEntry+Source for stable sort; 22 unit tests covering all §5.3 scenarios, malformed line handling, empty files, one-sided merge, duplicate key (remote wins), stable sort tie-break
+- Updated src/merge/mod.rs: pub mod declarations for entry and set_union
+- 147 tests total (37 new); all passing; cargo fmt, clippy -D warnings, cargo deny all pass
+- **Learnings for future iterations:**
+  - `Path::new("x")` is NOT const-stable in the current Rust edition; can't use it in `const` — use a `fn` returning `&'static Path` instead
+  - HashMap insertion order is non-deterministic; always collect + sort rather than relying on iteration order from a HashMap
+  - Prefix verification (§5.2 step 2) and its logging are deliberately deferred to US-007 — merge_jsonl silently uses remote-wins without warning
+  - `uuid` used as fallback id field to accommodate Claude session format; documented in entry.rs comment
+  - sed substitution of test variable names (e.g., `let local = "..."`) can collide with helper function names — rename helpers to `local_path()` / `remote_path()` to avoid shadowing
+---
+
+## 2026-03-29 - US-007
+Session: iter-2976d977 / loop-26ce4e61 iteration 7
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented prefix verification (§5.4) and `ConflictReporter` interface in `src/merge/set_union.rs`
+- Added `ConflictReporter` trait with `report_prefix_mismatch(file, entry_key, local_raw, remote_raw)`
+- Added `NullReporter` (no-op impl, `#[derive(Debug, Default)]`) for use until US-008 wires in the real ring buffer
+- Added `PrefixConflict { file, entry_key, local_raw, remote_raw }` record type
+- Extended `MergeOutput` with `conflicts: Vec<PrefixConflict>` field
+- Updated `merge_jsonl` signature: added `reporter: &dyn ConflictReporter` parameter
+- Prefix verification loop: for each local entry with a key present in remote map, compare `raw` byte-by-byte; mismatch → `tracing::warn!` + `reporter.report_prefix_mismatch()` + push to `conflicts`; remote version stays; local skipped
+- Updated all 22 existing tests to pass `&NullReporter`; added 6 new US-007 tests
+- Moved `RefCell` import into `mod tests` block to avoid top-level unused-import warning
+- Files changed: `src/merge/set_union.rs`
+- 153 tests total; all passing; cargo fmt, clippy -D warnings, cargo deny all pass
+- **Learnings for future iterations:**
+  - `RefCell` used in test-local `RecordingReporter` — import it inside `mod tests`, not at file top-level, to avoid `unused-imports` lint
+  - `tracing::warn!` with `%` prefix uses `Display` (works for `path.display()`) and `?` prefix uses `Debug` (works for `EntryKey`); `.chars().take(80).collect::<String>()` inline in the macro arg is fine
+  - `ConflictReporter` trait methods return `()` so no `#[must_use]` needed on them; but `merge_jsonl` has `#[must_use]` — test calls that intentionally discard the result need `let _ = ...`
+  - Doc comments with long continuation lines (`///   ...`) must not over-indent; clippy::doc_overindented_list_items fires if continuation indentation > 2 spaces from `///`
+---
+
 ## PRD Run Context
 PRD Branch: ralph/initial-delivery
 Started: 2026-03-29T02:25:06.047Z
@@ -125,4 +188,38 @@ Corrective Plan: N/A
   - First `cargo test` takes much longer than `cargo check` (separate test binary, includes proptest/tempfile/rusty-fork)
   - `pub` items in a binary crate DO get dead_code warnings if never referenced from main; use `#![allow(dead_code)]` at module level for foundational scaffolding
   - git commit hooks run `ralphi check` which calls all configured quality commands — keep those passing before committing
+---
+## 2026-03-29 - US-005
+Session: iter-bc406038 / loop-26ce4e61 iteration 5
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented L2 structured field canonicalization, L3 freeform canonicalization,
+  and full de-canonicalization per spec §4.2–4.3, §4.7
+- Created src/canon/fields.rs: WHITELISTED constant (7 field paths from §4.3),
+  apply_to_whitelisted (only touches specified JSON field paths), apply_to_all_strings
+  (recursive tree walker for L3 full-string scan); 8 unit tests
+- Created src/canon/levels.rs: canonicalize_line (level<2 passthrough, level=2 uses
+  whitelisted, level>=3 uses all-strings), decanonicalize_line (global reversal to
+  all string values), L3_WARNING const; 27 unit tests + 3 proptest round-trip properties
+- Updated src/canon/mod.rs: added try_canonicalize_path (L2 prefix match), 
+  try_canonicalize_text (L3 global scan), try_decanonicalize_text (custom tokens
+  then SYNC_HOME reversal), replace_in_text helper (/-or-EOS boundary),
+  canonical_token_value helper; 24 new unit tests
+- Files changed: src/canon/mod.rs, src/canon/fields.rs (new), src/canon/levels.rs (new)
+- 110 tests total, all passing; cargo fmt, clippy -D warnings, cargo deny all pass
+- **Learnings for future iterations:**
+  - replace_in_text: boundary is "/" or EOS — prevents bradmatic2 matching bradmatic;
+    for L3 custom token application this means exact paths without a subdir might
+    not have the custom token applied, but SYNC_HOME still applies and round-trip holds
+  - For L2, try_canonicalize_path does prefix-only matching and breaks after first
+    custom token hit; for L3, try_canonicalize_text applies ALL custom tokens globally
+    (no break) so multiple occurrences in freeform text all get canonicalized
+  - decanonicalize_line applies to ALL string values regardless of level — safe because
+    the token pattern {{...}} doesn't appear naturally in session content
+  - proptest strategies go inside `mod tests` block, import `use proptest::prelude::*;`
+    inside the mod (not at the file top level)
+  - L3_WARNING needs to be emitted by CLI sync/import commands (US-013/US-014/US-017)
+    when config.canonicalization.level >= 3
 ---
