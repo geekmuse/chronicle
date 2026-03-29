@@ -231,6 +231,12 @@ Corrective Plan: N/A
   - Paths passed to `index.add_path` must be repo-relative (not absolute); callers are responsible for computing the relative path
   - `commit.committer().email()` and `.name()` return `Option<&str>` from git2; unwrap in tests is acceptable when we just created the commit and know the signature is valid UTF-8
 
+- `MaterializeFilter` enum (`Full` | `Partial(usize)`) in `cli/mod.rs` — built via `MaterializeFilter::from_config(cfg)` before `materialize_repo_to_local`; passed down to `materialize_agent_dir`
+- `pi_filename_timestamp(filename)` — parses `YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl`; splits on `T`, splits time on `-` into HH/MM/SS/msZ, reconstructs RFC 3339, parses with `DateTime::parse_from_rfc3339`
+- `claude_earliest_file_timestamp(path)` — reads file, parses each line as JSON, checks `timestamp`/`created_at`/`createdAt`, returns `.min()` over valid `DateTime<Utc>` values
+- `select_partial_session_files(files, max_count, is_pi)` — scores each file, sorts descending (newest first, `None` timestamps last), takes first `max_count`, returns `HashSet<String>` of filenames
+- Partial filter is applied **per session subdirectory** — files outside the window are skipped during the write loop, never deleted; the `selected: Option<HashSet<String>>` is `None` for Full mode (avoids per-file HashSet lookup overhead)
+
 ## PRD Run Context
 PRD Branch: ralph/initial-delivery
 Started: 2026-03-29T02:25:06.047Z
@@ -514,3 +520,27 @@ Corrective Plan: N/A
   - `refs/remotes/origin/main` may not exist if the remote uses a different branch name; `or_else(|_| repo.find_reference("refs/remotes/origin/master"))` covers both common cases
   - For push tests, a local bare repo (git2::Repository::init_bare) is the simplest way to exercise the full push path including retry logic
 ---
+---
+
+## 2026-03-29 - US-016
+Session: iter-87638791 / loop-26ce4e61 iteration 16
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented partial history materialization (§7) in `src/cli/mod.rs`
+- Added `MaterializeFilter` enum (`Full` | `Partial(usize)`) — built from `cfg.sync.history_mode` + `partial_max_count`
+- Added `pi_filename_timestamp(filename)` — parses Pi session filename timestamp (`YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl`)
+- Added `claude_earliest_file_timestamp(path)` — reads file, finds `.min()` over `timestamp`/`created_at`/`createdAt` fields
+- Added `select_partial_session_files(files, max_count, is_pi)` — sorts by recency descending, takes top N, returns `HashSet<String>`
+- Modified `materialize_agent_dir` to collect all `.jsonl` files per subdirectory, apply the partial filter, then write only selected files; no existing local files are ever deleted
+- Modified `materialize_repo_to_local` to build and pass the filter; outgoing paths (push/import) are entirely unaffected
+- 9 new unit tests: Pi timestamp parsing, Claude earliest timestamp, partial file selection ordering, materialize_agent_dir full mode, partial mode, no-deletion invariant
+- 267 total tests; all passing; cargo fmt, clippy -D warnings, cargo deny all pass
+- Files changed: `src/cli/mod.rs`
+- **Learnings for future iterations:**
+  - Pi session filename format is `YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl` — reconstruct RFC 3339 by replacing `-` separators in time part with `:`, `.`
+  - `DateTime::parse_from_rfc3339` returns `Result<DateTime<FixedOffset>, _>`; use `.map(|dt| dt.with_timezone(&Utc))` to normalise to UTC
+  - For partial filtering, `None` timestamps (unrecognised filenames) should sort last so they only consume window slots if there's room
+  - `selected: Option<HashSet<String>>` — `None` for Full mode avoids a per-file HashSet lookup on the hot path; `Some(set)` for Partial mode
+  - `chrono::Timelike` trait must be imported for `.hour()`, `.minute()`, `.second()` in tests

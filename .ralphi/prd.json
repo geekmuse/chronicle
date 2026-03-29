@@ -399,14 +399,14 @@
         "cargo test passes"
       ],
       "priority": 16,
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "US-005"
       ],
       "notes": "",
       "startedAt": "2026-03-29T19:12:00.894Z",
-      "updatedAt": "2026-03-29T19:12:00.894Z",
-      "completedAt": null
+      "updatedAt": "2026-03-29T19:21:14.211Z",
+      "completedAt": "2026-03-29T19:21:14.209Z"
     },
     {
       "id": "US-017",
