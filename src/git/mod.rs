@@ -5,7 +5,10 @@
 // US-012: staging and commit formatting.
 #![allow(dead_code)]
 
+mod commit;
 mod fetch_push;
+#[allow(unused_imports)]
+pub use commit::{format_import_message, format_sync_message, SyncSummary};
 #[allow(unused_imports)]
 pub use fetch_push::is_network_error;
 #[allow(unused_imports)]
