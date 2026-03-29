@@ -1,6 +1,8 @@
-// Items in this module are foundational types used by future stories (US-007,
-// US-008, US-011, etc.). Allow dead-code until those modules are wired in.
+// ChronicleError variants are wired into callers progressively across stories.
+// Allow dead-code until US-015/US-017/US-018 complete the wiring.
 #![allow(dead_code)]
+
+pub mod ring_buffer;
 
 /// All error categories that Chronicle can produce.
 ///
