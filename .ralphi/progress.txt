@@ -1,4 +1,11 @@
 ## Codebase Patterns
+- `sync_impl(dry_run, quiet, config_path, home)` — testable core of `handle_sync`; follows same injection pattern as push_impl/pull_impl
+- `build_updated_manifest(manager, machine_name, now)` — reads current manifest, upserts `last_sync` for machine (creates entry with `first_seen=now` if absent), returns updated struct without writing; caller writes to disk (+optionally stages)
+- Sync manifest strategy: write manifest.json to disk always; stage+commit it only when outgoing session changes exist (combined in the same commit); on idempotent sync (no outgoing changes) manifest is written to disk only, no separate commit
+- Idempotent materialize: `materialize_agent_dir` checks `fs::read_to_string(local_file)` == `decanon_content` before writing; equal content skips write and does NOT increment total (satisfies "no file writes" on repeated syncs)
+- HEAD guard before push: `if manager.repository().head().is_ok()` — skips push on repos with no commits yet (edge case: fresh repo with no session data + empty remote)
+- Sync git exchange skipped when `remote_url.is_none()` — logs "[git] No remote configured" instead of failing; ring_buf created only inside the remote block
+
 - `push_impl(dry_run, config_path, home)` / `pull_impl(dry_run, config_path, home)` — testable cores of `handle_push` / `handle_pull`; inject home so tests don't touch real `$HOME`
 - `ScannedChange` struct bundles `entry`, `source_dir`, `repo_rel_base`, `is_pi` — collects scan results before deciding dry-run vs live path
 - `PushFileParams<'a>` / `PushedFile` — param bundle + result struct for `process_push_file`; keeps function under 7 arguments (clippy::too_many_arguments)
@@ -544,3 +551,44 @@ Corrective Plan: N/A
   - For partial filtering, `None` timestamps (unrecognised filenames) should sort last so they only consume window slots if there's room
   - `selected: Option<HashSet<String>>` — `None` for Full mode avoids a per-file HashSet lookup on the hot path; `Some(set)` for Partial mode
   - `chrono::Timelike` trait must be imported for `.hour()`, `.minute()`, `.second()` in tests
+
+## 2026-03-29 - US-017
+Session: iter-97ebb976 / loop-26ce4e61 iteration 17
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented `chronicle sync` command in `src/cli/mod.rs`
+- `handle_sync(dry_run, quiet)` delegates to `sync_impl(dry_run, quiet, config_path, home)`
+- Full bidirectional sync cycle per §14:
+  1. Outgoing: scan changed files via scan_dir + state cache; process_push_file for each;
+     stage session files + manifest.json; commit via format_sync_message
+  2. Git exchange: fetch("origin"), integrate_remote_changes, push_with_retry with retry
+     and ring-buffer logging; HEAD-existence guard prevents push on repos with no commits
+  3. Incoming: materialize_repo_to_local with partial history filter
+  4. Bookkeeping: state_cache.save() after successful cycle
+- `build_updated_manifest(manager, machine_name, now)` — upserts machine last_sync in
+  manifest.json; manifests committed alongside session changes, or written-to-disk-only
+  when there are no outgoing changes (satisfies idempotency criterion)
+- Modified `materialize_agent_dir`: added content-equality check before write —
+  skips writing and does NOT increment total when local file is identical (idempotent sync)
+- `--dry-run`: reports all three phases without touching filesystem; returns before
+  repo init (no repo directory created)
+- `--quiet`: all println! guarded by `!quiet`; eprintln! (warnings, L3) always emitted
+- 5 new tests: dry_run_no_repo, commits_and_pushes, manifest_last_sync, state_cache,
+  idempotent_no_new_commit; `write_sync_config` helper with pi/claude enable flags
+- 272 tests total; cargo fmt, clippy -D warnings, cargo deny all pass
+- Files changed: `src/cli/mod.rs`
+- **Learnings for future iterations:**
+  - Sync manifest strategy: commit manifest alongside outgoing session files; when no
+    outgoing changes, write manifest to disk only (no standalone commit, preserves idempotency)
+  - `repo.head()` returns Err(UnbornBranch) on repos with no commits — guard push with
+    `manager.repository().head().is_ok()` to handle fresh-repo edge case gracefully
+  - `materialize_agent_dir` content-check (`existing == decanon_content → continue`) is
+    the key to satisfying "no file writes on idempotent sync" — reads each local file but
+    only counts + writes when content actually differs
+  - `ring_buf` should be created inside the `if remote_url.is_some()` block to avoid
+    unused-variable warnings when no remote is configured
+  - `write_sync_config` helper for tests needs pi_enabled + claude_enabled params to be
+    flexible; simpler tests can reuse the existing `write_import_config` (no remote set)
+---
