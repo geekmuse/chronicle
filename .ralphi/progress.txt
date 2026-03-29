@@ -636,3 +636,134 @@ Corrective Plan: N/A
   - `expand_home(path, home)` vs `config::expand_path(path)`: the former uses an injected
     home dir (for testing), the latter reads the real `dirs::home_dir()` at runtime
 ---
+
+## 2026-03-29 - US-019
+Session: iter-2220338a / loop-26ce4e61 iteration 19
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented `chronicle schedule install/uninstall/status` commands (§10)
+- Created `src/scheduler/cron.rs`:
+  - `MARKER = "# chronicle-sync"` — comment suffix on all Chronicle crontab lines
+  - `SUPPORTED` table of 6 standard interval→cron-expr mappings (§10.2)
+  - `interval_to_cron(interval)` → `(cron_expr, Option<warning>)` — exact match first,
+    then parse minutes + round down to largest ≤ step; non-standard intervals get a warning
+  - `cron_expr_to_interval(expr)` — reverse lookup for status display
+  - `filter_marker_lines(lines)` — pure: removes lines containing MARKER
+  - `build_entries(binary, cron_expr)` → `[String; 2]` — `@reboot` + interval entries
+  - `apply_install(existing, binary, cron_expr)` — pure: filter + append
+  - `apply_uninstall(existing)` — pure: filter
+  - `parse_installed_binary(lines)` — prefers @reboot line, falls back to interval line
+  - `parse_installed_cron_expr(lines)` — first 5 whitespace-separated tokens of interval line
+  - `ScheduleStatus` struct: installed, interval, cron_expression, binary_path
+  - `parse_status(lines)` — pure: builds ScheduleStatus from crontab lines
+  - `crontab_read()` — runs `crontab -l`; "no crontab" stderr treated as empty (not error)
+  - `crontab_write(lines)` — pipes to `crontab -`; empty → `crontab -r`; stdin dropped before wait
+  - `install/uninstall/status` — high-level I/O wrappers
+  - `SchedulerError`: thiserror enum with Io + Command variants
+- Updated `src/scheduler/mod.rs`: `pub mod cron`
+- Updated `src/cli/mod.rs`: replaced 3 stubs with full implementations
+  - `handle_schedule_install`: loads config, calls `interval_to_cron`, detects binary via
+    `std::env::current_exe()` (fallback argv[0]), calls `scheduler_cron::install`
+  - `handle_schedule_uninstall`: delegates to `scheduler_cron::uninstall`
+  - `handle_schedule_status`: delegates to `scheduler_cron::status`, prints table
+- 27 new unit tests: all 6 exact intervals, 3 round-down cases, filter/build/apply_install
+  (3), apply_uninstall (2), parse_binary (3), parse_cron_expr (2), parse_status (3)
+- 312 tests total; cargo fmt, clippy -D warnings, cargo deny all pass
+- Files changed: `src/scheduler/cron.rs` (new), `src/scheduler/mod.rs`, `src/cli/mod.rs`
+- **Learnings for future iterations:**
+  - Pure `apply_install` / `apply_uninstall` / `parse_status` functions make all business
+    logic testable without spawning crontab processes
+  - `crontab_write` drops stdin before `child.wait()` — ensures crontab receives EOF and
+    terminates cleanly before the parent waits; without this, deadlock is possible on large inputs
+  - `crontab -l` and `crontab -r` both print "no crontab for user" to stderr on non-zero exit
+    when the user has no crontab; treat this as a normal empty-crontab state, not an error
+  - `std::env::current_exe()` is the idiomatic way to get the running binary's absolute path;
+    always use it for crontab entries (cron runs with a minimal PATH)
+  - `cron_expr_to_interval` needs the full 5-field string (e.g., `"*/5 * * * *"`) to match
+    SUPPORTED entries; `parse_installed_cron_expr` reconstructs this via `split_whitespace`
+    and indexing parts[0..5]
+---
+
+## 2026-03-29 - US-020
+Session: iter-31249637 / loop-26ce4e61 iteration 20
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented property-based tests (§15.3) using proptest across three files
+- src/merge/set_union.rs — 4 new proptest tests (inside existing mod tests):
+  - `arb_entries(prefix, max)`: generates 0..=max unique JSONL message entries;
+    ID = `"<prefix><index:04>"` guarantees disjoint sets across distinct prefixes
+  - `key_set(content)`: extracts `"type:id"` BTreeSet from JSONL via serde_json
+  - `to_jsonl(lines)`: joins entries with newlines + trailing newline
+  - `prop_merge_commutativity`: disjoint sets "a*"/"b*"; entry-key SET equal after swap
+  - `prop_merge_associativity`: merge(merge(A,B),C) == merge(A,merge(B,C)) at key-SET level
+  - `prop_merge_idempotency`: merge(A,A) same keys, zero conflicts
+  - `prop_merge_superset`: all A- and B-keys appear in merge(A,B)
+- src/canon/mod.rs — 2 new proptest tests (inside existing mod tests):
+  - `prop_l1_pi_round_trip`: random user component in `/Users/<user>`; builds
+    valid `--Users-<user>[-sub...]--` name; verifies decanon(canon(name)) == name
+  - `prop_l1_claude_round_trip`: same for `-Users-<user>[-sub...]` Claude format
+- src/canon/levels.rs — 2 new proptest tests (added to existing proptest! block):
+  - `prop_l2_round_trip_random_home`: varies home user + subpath; L2 round-trip
+  - `prop_l3_round_trip_random_home`: varies home user + subpath; L3 round-trip
+- All 8 new tests pass (320 total); cargo fmt, clippy -D warnings, cargo deny all pass
+- Files changed: src/merge/set_union.rs, src/canon/mod.rs, src/canon/levels.rs
+- **Learnings for future iterations:**
+  - `prop_assert_eq!` and `prop_assert!` expand via `concat!` internally — implicit
+    variable capture in format strings (e.g., `"{name}"`) is NOT supported; always
+    use explicit positional arguments: `"name={}", name`
+  - Disjoint ID prefixes ("a*", "b*", "c*") in `arb_entries` are the key to making
+    commutativity/associativity/superset properties hold without conflict-resolution
+    bias — same-key conflicts would make commutativity non-trivially false in content
+  - Merge commutativity/associativity tests the SET of entry keys, not the ordered
+    output string — the stable source-based tie-breaker (Remote=0 < Local=1) means
+    equal-timestamp entries would swap positions when A and B roles are swapped
+  - `key_set` helper using `serde_json` directly is cleaner than importing `parse_entry`
+    from the sibling module (avoids needing a `pub use` or extra import in mod tests)
+  - `prop::collection::vec(..., 0..=max)` generates empty vecs; all four merge
+    properties hold trivially for empty sets — no special-casing needed
+---
+
+## 2026-03-29 - US-021
+Session: iter-fc861c0d / loop-26ce4e61 iteration 21
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented integration tests (§15.2) in `tests/` directory covering 8 scenarios
+- Added `src/lib.rs` to expose all modules as `pub mod` for integration test access
+- Changed `src/main.rs` to use the library (removed `mod` declarations, added `use chronicle::cli`)
+- Changed `import_impl`, `push_impl`, `pull_impl`, `sync_impl` to `pub fn` for testability
+- Fixed `integrate_remote_changes` to create a MERGE COMMIT (parents=[local_head, remote_commit])
+  instead of a plain commit — this makes multi-machine push fast-forward without rejection
+- 8 integration tests in `tests/integration.rs`:
+  1. `two_machine_basic_sync`: A pushes session, B syncs and materializes it
+  2. `concurrent_append_different_dirs_both_machines_get_all`: A+B have different projects; both see both
+  3. `concurrent_append_same_session_merged_union`: A+B have same session; B's result is set union
+  4. `canon_round_trip_cwd_field_across_machines`: L2 cwd field survives A→canon→store→decanon→B
+  5. `partial_history_200_sessions_50_materialized`: 200 sessions in one dir, max=50, exactly 50 materialized
+  6. `malformed_jsonl_valid_lines_preserved`: malformed lines skipped by merge_jsonl, valid survive
+  7. `import_batching_five_dirs_five_commits`: 5 dirs → 5 commits (one commit per dir)
+  8. `idempotent_sync_no_new_commits`: second sync creates no new commits
+- 328 total tests (320 lib + 8 integration); all pass
+- cargo fmt, clippy -D warnings, cargo deny all pass
+- Files changed: src/lib.rs (new), src/main.rs, src/cli/mod.rs, tests/integration.rs (new)
+- **Learnings for future iterations:**
+  - Binary crates need `src/lib.rs` to expose internal functions for `tests/` integration tests;
+    `src/main.rs` then uses `use chronicle::cli;` instead of `mod cli;`
+  - `integrate_remote_changes` originally used `commit_if_staged` creating a plain commit; this
+    caused non-fast-forward push rejections in multi-machine scenarios; the fix is a MERGE COMMIT
+    with parents=[local_head_if_any, remote_commit] — the push then fast-forwards onto the remote tip
+  - Saving `remote_commit_oid: git2::Oid` (a Copy value) in a block scope and re-finding the commit
+    by OID later avoids lifetime conflicts when borrowing git2::Commit and calling repo methods
+  - Integration tests must work with real `scan::StateCache::default_path()` (real XDG data dir);
+    this is safe because each test uses unique absolute temp paths as cache keys — no collision
+  - `import_impl` fallback behavior: malformed lines kept as-is (not skipped); the MERGE operation
+    (via `merge_jsonl`) DOES skip malformed lines; test malformed-line behavior via sync (A pushes,
+    B fetches+merges) not via import
+  - Pi timestamp filename parsing requires `YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl` format;
+    sequential test files: `2024-01-01T00-00-{ss:02}-000Z_{i:04}.jsonl` for i=0..59, then carry minutes
+---

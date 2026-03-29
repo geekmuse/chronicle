@@ -1,15 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod agents;
-mod canon;
-mod cli;
-mod config;
-mod errors;
-mod git;
-mod merge;
-mod scan;
-mod scheduler;
+use chronicle::cli;
 
 /// Bidirectional sync for AI agent session history across machines.
 #[derive(Parser)]
