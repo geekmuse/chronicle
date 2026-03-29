@@ -1,4 +1,20 @@
 ## Codebase Patterns
+- `git::RepoManager`: wraps `git2::Repository`; `init_or_open(path, remote_url)` → open if exists (ErrorCode::NotFound triggers init), set remote if provided; `ensure_working_tree()` creates pi/sessions/ + claude/projects/ (both with .gitkeep) + .chronicle/; `ensure_manifest()` writes default if absent; all public methods are idempotent
+- `git::GitError`: thiserror enum — `Git2(git2::Error)`, `Io { path, source }`, `Manifest(String)`; private `GitError::io(path, source)` constructor reduces boilerplate
+- `git::Manifest` / `git::MachineEntry`: serde structs for `.chronicle/manifest.json`; `version: u32` (always 1), `machines: HashMap<String, MachineEntry>`; `last_sync` is `Option<DateTime<Utc>>` with `skip_serializing_if = "Option::is_none"`
+- `open_or_init(path)`: module-private helper; `Repository::open` → if `ErrorCode::NotFound` → `create_dir_all` + `Repository::init`; other errors propagated
+- `set_remote(name, url)`: private method; `find_remote` → if NotFound add, else update URL via `remote_set_url`
+- `.gitkeep` files placed in `pi/sessions/` and `claude/projects/` so git tracks empty dirs; `.chronicle/` left without .gitkeep (manifest.json serves that purpose)
+- `serde_json::to_string_pretty` for manifest writes (human-readable JSON)
+- `scan::StateCache`: `files: HashMap<String, FileState>`; `load(path)` (missing → empty), `save(path)` (atomic temp+rename), `default_path()` (`~/.local/share/chronicle/state.json`); key is canonical repo path in production, absolute local path in unit tests
+- `scan::FileState`: `local_mtime: DateTime<Utc>`, `local_size: u64`, `last_synced_size: u64`, `local_path: PathBuf`; serialized with `skip_serializing_if` is NOT needed here (all fields required)
+- `scan::scan_dir(dir, cache, follow_symlinks)` → `Result<Vec<ScanEntry>, ScanError>`; checks symlink on `dir` via `fs::symlink_metadata`; walks via `collect_jsonl` (skips inner symlinks); classifies via `classify(path, mtime, size, cache)` using abs-path key
+- `scan::ChangeKind`: `New` (key absent), `Modified` (key present, mtime or size differs), `Unchanged` (both match)
+- `scan::ScanError`: `SymlinkRefused(PathBuf)` | `Io { path, source }`
+- `DateTime::<Utc>::from(system_time)` — idiomatic `SystemTime → DateTime<Utc>` conversion; `Utc.timestamp_opt(secs, nsecs)` needs `use chrono::TimeZone;` in the test mod
+- `std::io::Error::other(e)` — prefer over `std::io::Error::new(ErrorKind::Other, e)` (clippy::io_other_error fires on the latter)
+- `collect_jsonl` uses `DirEntry::file_type()` (lstat, no symlink follow) and skips `ft.is_symlink()` entries — only the top-level `dir` symlink is policy-checked
+
 - `merge::entry`: `EntryKey` enum (`Header` | `Entry{entry_type,id}`); `parse_entry(raw)` returns `Option<ParsedEntry>`; `extract_timestamp(value)` checks `timestamp`, `created_at`, `createdAt` fields
 - `merge::set_union::merge_jsonl(remote, remote_path, local, local_path, reporter)` → `MergeOutput { content, malformed, conflicts }`; remote entries populate first (win on collision); prefix verification (§5.4) detects byte-inequivalent common entries
 - `ConflictReporter` trait in `merge::set_union` — `report_prefix_mismatch(file, entry_key, local_raw, remote_raw)`; `NullReporter` is the no-op impl; real ring buffer impl comes in US-008
@@ -249,4 +265,64 @@ Corrective Plan: N/A
   - `skip_serializing_if = "Option::is_none"` on optional fields keeps JSON lean; deserialization with absent fields defaults to None automatically
   - `dirs::data_local_dir()` on macOS returns `~/Library/Application Support`; on Linux returns `~/.local/share` — the XDG-compliant path per spec §11.1
   - `ConflictReporter` from US-007 used `NullReporter` as placeholder; US-008 `RingBuffer` is the real impl to wire in when US-015/US-017/US-018 connect the merge pipeline to the ring buffer
+---
+
+## 2026-03-29 - US-009
+Session: iter-8cd84475 / loop-26ce4e61 iteration 9
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented file change scanner (§14.1) in `src/scan/mod.rs`
+- `StateCache`: `load(path)` (returns empty when file missing, propagates other I/O), `save(path)` (atomic via temp+rename), `default_path()` XDG path
+- `FileState`: `local_mtime`, `local_size`, `last_synced_size`, `local_path` — full serde round-trip
+- `scan_dir(dir, cache, follow_symlinks)` → `Result<Vec<ScanEntry>, ScanError>`
+  - Symlink policy: `symlink_metadata(dir)` to detect top-level dir symlink; `follow_symlinks=false` → `tracing::error!` + `Err(SymlinkRefused)`; `follow_symlinks=true` → `tracing::warn!` + proceed
+  - `collect_jsonl` recursive walk skips inner symlinks via `ft.is_symlink()` check
+  - `classify` uses absolute path as cache key; returns `New`/`Modified`/`Unchanged`
+- `ChangeKind` enum, `ScanEntry` struct, `ScanError` enum (thiserror)
+- 14 unit tests: missing file, save/load round-trip, parent dir creation, default_path suffix, first run (all new), new/modified/unchanged file, non-jsonl ignored, empty dir, nested subdirs, symlink refused (unix), symlink followed (unix)
+- Files changed: `src/scan/mod.rs`
+- 183 tests total; all passing; cargo fmt, clippy -D warnings, cargo deny all pass
+- **Learnings for future iterations:**
+  - `std::io::Error::other(e)` is the idiomatic form; `clippy::io_other_error` fires on `Error::new(ErrorKind::Other, e)`
+  - `DateTime::<Utc>::from(system_time)` for `SystemTime → DateTime<Utc>`; uses the `From<SystemTime>` impl in chrono
+  - `Utc.timestamp_opt(secs, nsecs)` requires `use chrono::TimeZone;` — import inside `mod tests` block not at file top-level
+  - `DirEntry::file_type()` uses lstat (no symlink follow); `ft.is_symlink()` correctly identifies symlinked children inside a directory
+  - State cache key: use absolute path string in unit tests; real integration (US-017) will pass canonical repo-relative keys
+---
+
+## 2026-03-29 - US-010
+Session: iter-7c806c57 / loop-26ce4e61 iteration 10
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented `RepoManager` in `src/git/mod.rs` — git repo management via git2
+- `init_or_open(path, remote_url)`: opens existing repo or initializes new one;
+  uses `ErrorCode::NotFound` guard on `Repository::open` to distinguish "not a repo yet"
+  from other failures (corrupt repo, permissions, etc.); parent dirs auto-created
+- `ensure_working_tree()`: creates pi/sessions/ + .gitkeep, claude/projects/ + .gitkeep,
+  and .chronicle/ directory; fully idempotent
+- `ensure_manifest()` / `read_manifest()` / `write_manifest()`: .chronicle/manifest.json
+  management; read returns default Manifest (version=1, empty machines) when file absent;
+  ensure_manifest is a no-op when file exists; write uses serde_json::to_string_pretty
+- `set_remote(name, url)`: adds origin on first init; updates URL (remote_set_url) on reopen;
+  empty/None URL skipped so origin is only set when explicitly configured
+- `GitError` (thiserror): Git2, Io { path, source }, Manifest variants
+- `Manifest` / `MachineEntry` serde structs per §6.3 spec schema;
+  last_sync: Option<DateTime<Utc>> with skip_serializing_if=Option::is_none
+- Files changed: `src/git/mod.rs`
+- 16 new unit tests; 199 total; all pass
+- **Learnings for future iterations:**
+  - `git2::Repository::open` returns `ErrorCode::NotFound` for both "path doesn't exist"
+    and "path exists but isn't a git repo" — matching this variant is sufficient to determine
+    that initialization is required; all other errors indicate genuine problems
+  - `Repository::init` on an already-initialized repo is idempotent in libgit2, but
+    the explicit open-then-init pattern is clearer and avoids any potential config reset
+  - `remote_set_url` is the correct method to update an existing remote URL (not `remote_delete`
+    + `remote`); `find_remote` returns NotFound for a non-existent remote name
+  - US-011 (fetch/push) and US-012 (staging/commits) will add methods to RepoManager —
+    they need access to `self.repo` (git2::Repository) and `self.repo_path`
+  - `git2::Repository` does not implement `Debug`, so `RepoManager` cannot `#[derive(Debug)]`
 ---
