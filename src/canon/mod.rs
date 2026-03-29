@@ -29,6 +29,9 @@
 //! end of the string.  This prevents `/Users/bradmatic2` from matching when the
 //! home directory is `/Users/bradmatic`.
 
+pub mod fields;
+pub mod levels;
+
 use std::path::{Path, PathBuf};
 
 use crate::config::schema::CanonicalizationConfig;
@@ -293,6 +296,144 @@ impl TokenRegistry {
         }
 
         result
+    }
+}
+
+// ── Content string helpers (L2 / L3) ─────────────────────────────────────────
+
+/// Replace all path-boundary occurrences of `from` with `to` in `text`.
+///
+/// A path boundary after `from` means the next character is either:
+/// - the end of the string, or
+/// - `/` (the path continues as a subdirectory).
+///
+/// This prevents partial matches: `/Users/bradmatic` does **not** match inside
+/// `/Users/bradmatic2/foo` because `2` follows the prefix without a `/`.
+fn replace_in_text(text: &str, from: &str, to: &str) -> String {
+    if from.is_empty() || !text.contains(from) {
+        return text.to_owned();
+    }
+    let mut result = String::with_capacity(text.len() + 32);
+    let mut remaining = text;
+    while let Some(pos) = remaining.find(from) {
+        let after = &remaining[pos + from.len()..];
+        let at_boundary = after.is_empty() || after.starts_with('/');
+        if at_boundary {
+            result.push_str(&remaining[..pos]);
+            result.push_str(to);
+            remaining = after;
+        } else {
+            // Not a boundary — copy through and continue searching past the match.
+            result.push_str(&remaining[..pos + from.len()]);
+            remaining = after;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Compute the canonical storage form of a custom token value.
+///
+/// If `token_value` is under `home` (starts with `home/`), its canonical form
+/// replaces the home prefix with the home token.  Otherwise the value is
+/// returned as-is (non-home custom tokens are stored verbatim).
+fn canonical_token_value(token_value: &Path, home: &str, home_token: &str) -> String {
+    let tv = token_value.to_string_lossy();
+    if tv == home {
+        home_token.to_owned()
+    } else if tv.starts_with(home) && tv[home.len()..].starts_with('/') {
+        format!("{home_token}{}", &tv[home.len()..])
+    } else {
+        tv.into_owned()
+    }
+}
+
+impl TokenRegistry {
+    /// Try to canonicalize `s` as a **path value** (L2 semantics).
+    ///
+    /// The value is a candidate only if it equals `$HOME` or starts with
+    /// `$HOME/`.  After `{{SYNC_HOME}}` substitution the most-specific custom
+    /// token prefix is applied.
+    ///
+    /// Returns `Some(new_value)` if the string changed, `None` otherwise.
+    pub(crate) fn try_canonicalize_path(&self, s: &str) -> Option<String> {
+        let home = self.home.to_string_lossy();
+        let rest = if s == home.as_ref() {
+            ""
+        } else if s.starts_with(home.as_ref()) && s[home.len()..].starts_with('/') {
+            &s[home.len()..]
+        } else {
+            return None;
+        };
+
+        let after_home = format!("{}{rest}", self.home_token);
+
+        // Apply custom tokens: prefix-only (most-specific first, break on first match).
+        for (token_name, token_value) in &self.custom_tokens {
+            let cv = canonical_token_value(token_value, &home, &self.home_token);
+            if after_home == cv {
+                return Some(token_name.clone());
+            }
+            if after_home.starts_with(&cv) && after_home[cv.len()..].starts_with('/') {
+                return Some(format!("{token_name}{}", &after_home[cv.len()..]));
+            }
+        }
+
+        Some(after_home)
+    }
+
+    /// Try to canonicalize `s` as **freeform text** (L3 semantics).
+    ///
+    /// Replaces all path-boundary occurrences of the home path with
+    /// `{{SYNC_HOME}}`, then applies all custom tokens globally.
+    ///
+    /// Returns `Some(new_value)` if the string changed, `None` otherwise.
+    pub(crate) fn try_canonicalize_text(&self, s: &str) -> Option<String> {
+        let home = self.home.to_string_lossy();
+
+        // Step 1: Replace all home-path occurrences.
+        let step1 = replace_in_text(s, home.as_ref(), &self.home_token);
+
+        // Step 2: Apply custom tokens globally (most-specific canonical form first).
+        let mut result = step1;
+        for (token_name, token_value) in &self.custom_tokens {
+            let cv = canonical_token_value(token_value, &home, &self.home_token);
+            result = replace_in_text(&result, &cv, token_name);
+        }
+
+        if result == s {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    /// Try to de-canonicalize token occurrences in `s`.
+    ///
+    /// Reverses both L2 (path values) and L3 (freeform text) canonicalization
+    /// by scanning all string occurrences:
+    /// 1. Revert custom tokens (most-specific canonical form first).
+    /// 2. Revert `{{SYNC_HOME}}` to the local home directory.
+    ///
+    /// Returns `Some(new_value)` if the string changed, `None` otherwise.
+    pub(crate) fn try_decanonicalize_text(&self, s: &str) -> Option<String> {
+        let home = self.home.to_string_lossy();
+
+        // Step 1: Revert custom tokens (most-specific first, same order as canon).
+        let mut result = s.to_owned();
+        for (token_name, token_value) in &self.custom_tokens {
+            let cv = canonical_token_value(token_value, &home, &self.home_token);
+            result = replace_in_text(&result, token_name, &cv);
+        }
+
+        // Step 2: Revert {{SYNC_HOME}}.
+        result = replace_in_text(&result, &self.home_token, &home);
+
+        if result == s {
+            None
+        } else {
+            Some(result)
+        }
     }
 }
 
@@ -644,5 +785,213 @@ mod tests {
             reg.canonicalize_pi_dir("--opt-homebrew-cellar--"),
             "--opt-homebrew-cellar--"
         );
+    }
+
+    // ── replace_in_text (internal helper) ─────────────────────────────────────
+
+    #[test]
+    fn replace_in_text_simple() {
+        assert_eq!(
+            replace_in_text(
+                "/Users/bradmatic/Dev/foo",
+                "/Users/bradmatic",
+                "{{SYNC_HOME}}"
+            ),
+            "{{SYNC_HOME}}/Dev/foo"
+        );
+    }
+
+    #[test]
+    fn replace_in_text_exact_match() {
+        assert_eq!(
+            replace_in_text("/Users/bradmatic", "/Users/bradmatic", "{{SYNC_HOME}}"),
+            "{{SYNC_HOME}}"
+        );
+    }
+
+    #[test]
+    fn replace_in_text_no_boundary_no_replace() {
+        // "2" after the prefix is not a boundary
+        assert_eq!(
+            replace_in_text("/Users/bradmatic2/foo", "/Users/bradmatic", "{{SYNC_HOME}}"),
+            "/Users/bradmatic2/foo"
+        );
+    }
+
+    #[test]
+    fn replace_in_text_multiple_occurrences() {
+        assert_eq!(
+            replace_in_text(
+                "/Users/bradmatic/a and /Users/bradmatic/b",
+                "/Users/bradmatic",
+                "{{SYNC_HOME}}"
+            ),
+            "{{SYNC_HOME}}/a and {{SYNC_HOME}}/b"
+        );
+    }
+
+    #[test]
+    fn replace_in_text_preserves_non_matching_occurrences() {
+        // "/Users/bradmatic2" must stay; "/Users/bradmatic/ok" must be replaced
+        assert_eq!(
+            replace_in_text(
+                "/Users/bradmatic2/x and /Users/bradmatic/ok",
+                "/Users/bradmatic",
+                "{{SYNC_HOME}}"
+            ),
+            "/Users/bradmatic2/x and {{SYNC_HOME}}/ok"
+        );
+    }
+
+    #[test]
+    fn replace_in_text_empty_from_returns_original() {
+        let s = "some text";
+        assert_eq!(replace_in_text(s, "", "TOKEN"), s);
+    }
+
+    // ── try_canonicalize_path ─────────────────────────────────────────────────
+
+    #[test]
+    fn try_canonicalize_path_with_subdir() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(
+            reg.try_canonicalize_path("/Users/bradmatic/Dev/foo"),
+            Some("{{SYNC_HOME}}/Dev/foo".to_owned())
+        );
+    }
+
+    #[test]
+    fn try_canonicalize_path_exact_home() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(
+            reg.try_canonicalize_path("/Users/bradmatic"),
+            Some("{{SYNC_HOME}}".to_owned())
+        );
+    }
+
+    #[test]
+    fn try_canonicalize_path_no_match() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(reg.try_canonicalize_path("/tmp/other"), None);
+        assert_eq!(reg.try_canonicalize_path("relative/path"), None);
+        assert_eq!(reg.try_canonicalize_path("/Users/bradmatic2/foo"), None);
+    }
+
+    #[test]
+    fn try_canonicalize_path_custom_token() {
+        let reg = registry_with_tokens(
+            "/Users/bradmatic",
+            &[("{{SYNC_PROJECTS}}", "/Users/bradmatic/Dev")],
+        );
+        assert_eq!(
+            reg.try_canonicalize_path("/Users/bradmatic/Dev/myproj"),
+            Some("{{SYNC_PROJECTS}}/myproj".to_owned())
+        );
+        // Path not under custom token: falls back to SYNC_HOME
+        assert_eq!(
+            reg.try_canonicalize_path("/Users/bradmatic/other"),
+            Some("{{SYNC_HOME}}/other".to_owned())
+        );
+    }
+
+    // ── try_canonicalize_text ─────────────────────────────────────────────────
+
+    #[test]
+    fn try_canonicalize_text_finds_embedded_path() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(
+            reg.try_canonicalize_text("output: /Users/bradmatic/Dev/foo done"),
+            Some("output: {{SYNC_HOME}}/Dev/foo done".to_owned())
+        );
+    }
+
+    #[test]
+    fn try_canonicalize_text_no_home_returns_none() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(reg.try_canonicalize_text("no paths here"), None);
+    }
+
+    #[test]
+    fn try_canonicalize_text_multiple_occurrences() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(
+            reg.try_canonicalize_text("/Users/bradmatic/a and /Users/bradmatic/b"),
+            Some("{{SYNC_HOME}}/a and {{SYNC_HOME}}/b".to_owned())
+        );
+    }
+
+    // ── try_decanonicalize_text ───────────────────────────────────────────────
+
+    #[test]
+    fn try_decanonicalize_text_basic() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(
+            reg.try_decanonicalize_text("{{SYNC_HOME}}/Dev/foo"),
+            Some("/Users/bradmatic/Dev/foo".to_owned())
+        );
+    }
+
+    #[test]
+    fn try_decanonicalize_text_cross_machine() {
+        let reg = registry("/home/brad");
+        assert_eq!(
+            reg.try_decanonicalize_text("{{SYNC_HOME}}/Dev/foo"),
+            Some("/home/brad/Dev/foo".to_owned())
+        );
+    }
+
+    #[test]
+    fn try_decanonicalize_text_exact_token() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(
+            reg.try_decanonicalize_text("{{SYNC_HOME}}"),
+            Some("/Users/bradmatic".to_owned())
+        );
+    }
+
+    #[test]
+    fn try_decanonicalize_text_no_token_returns_none() {
+        let reg = registry("/Users/bradmatic");
+        assert_eq!(reg.try_decanonicalize_text("/Users/bradmatic/Dev"), None);
+    }
+
+    #[test]
+    fn try_decanonicalize_text_custom_token() {
+        let reg = registry_with_tokens(
+            "/Users/bradmatic",
+            &[("{{SYNC_PROJECTS}}", "/Users/bradmatic/Dev")],
+        );
+        // Reverts custom token, then SYNC_HOME
+        assert_eq!(
+            reg.try_decanonicalize_text("{{SYNC_PROJECTS}}/myproj"),
+            Some("/Users/bradmatic/Dev/myproj".to_owned())
+        );
+    }
+
+    // ── round-trip for content strings ────────────────────────────────────────
+
+    #[test]
+    fn content_round_trip_path() {
+        let reg = registry("/Users/bradmatic");
+        let cases = [
+            "/Users/bradmatic/Dev/foo",
+            "/Users/bradmatic",
+            "/tmp/unrelated",
+        ];
+        for s in cases {
+            let canon = reg.try_canonicalize_path(s);
+            let restored = match &canon {
+                Some(c) => reg.try_decanonicalize_text(c),
+                None => None,
+            };
+            let final_val = restored.as_deref().or(canon.as_deref()).unwrap_or(s);
+            if s.starts_with("/Users/bradmatic") {
+                // Should round-trip
+                assert_eq!(final_val, s, "content round-trip failed for {s}");
+            } else {
+                // No change expected
+                assert!(canon.is_none(), "unexpected canon for {s}");
+            }
+        }
     }
 }
