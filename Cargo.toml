@@ -5,7 +5,12 @@ edition = "2021"
 description = "Bidirectional sync for AI coding agent session history across machines"
 license = "MIT"
 authors = ["Brad Campbell"]
-repository = "ssh://git@git.bradleyscampbell.net:10022/geekmuse/chronicle.git"
+repository = "https://github.com/YOUR_USERNAME/chronicle"
+homepage = "https://github.com/YOUR_USERNAME/chronicle"
+documentation = "https://github.com/YOUR_USERNAME/chronicle#readme"
+readme = "README.md"
+keywords = ["sync", "ai", "sessions", "git", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1"

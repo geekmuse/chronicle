@@ -1,5 +1,8 @@
 # Chronicle
 
+[![CI](https://github.com/YOUR_USERNAME/chronicle/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/chronicle/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > Bidirectional sync for AI coding agent session history across machines, with path canonicalization and Git-backed storage.
 
 ## Overview
@@ -25,15 +28,22 @@ Chronicle synchronizes Pi and Claude Code session history across multiple machin
 
 ### Installation
 
+**From source:**
+
 ```bash
-# Build from source
-git clone ssh://git@git.bradleyscampbell.net:10022/geekmuse/chronicle.git
+git clone https://github.com/YOUR_USERNAME/chronicle.git
 cd chronicle
 cargo build --release
 
-# Install the binary
+# Or install directly into ~/.cargo/bin
 cargo install --path .
 ```
+
+**Pre-built binaries** are attached to each [GitHub release](https://github.com/YOUR_USERNAME/chronicle/releases) for:
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
 
 ### Usage
 
@@ -73,7 +83,7 @@ Detailed documentation lives in the [`docs/`](docs/) directory:
 
 ```bash
 # Clone the repository
-git clone ssh://git@git.bradleyscampbell.net:10022/geekmuse/chronicle.git
+git clone https://github.com/YOUR_USERNAME/chronicle.git
 cd chronicle
 
 # Build

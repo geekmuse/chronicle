@@ -15,7 +15,7 @@ cross_references:
 
 **Language:** Rust
 **Platforms:** macOS, Linux (Windows planned)
-**License:** TBD
+**License:** MIT
 
 ---
 

@@ -59,7 +59,7 @@ exceptions = []
 # license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [licenses.private]
-# Chronicle is not published to crates.io — ignore its own license in checks.
+# Ignore the root crate's own license entry in dependency license checks.
 ignore = true
 
 # ---------------------------------------------------------------------------

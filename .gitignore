@@ -16,6 +16,6 @@ Thumbs.db
 .env
 .env.*
 
-# ralphi
-.ralphi/*
-!.ralphi/config.yaml
+# ralphi / pre-commit tooling (author-local, not for contributors)
+.ralphi/
+prek.toml
