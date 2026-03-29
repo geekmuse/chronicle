@@ -1,0 +1,12 @@
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "ralphi-check",
+    name = "ralphi check",
+    language = "system",
+    entry = "ralphi check",
+    always_run = true,
+    pass_filenames = false,
+  },
+]
