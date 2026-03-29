@@ -324,8 +324,8 @@
       ],
       "notes": "",
       "startedAt": "2026-03-29T16:26:23.078Z",
-      "updatedAt": "2026-03-29T16:32:27.654Z",
-      "completedAt": "2026-03-29T16:32:27.657Z"
+      "updatedAt": "2026-03-29T16:33:26.316Z",
+      "completedAt": "2026-03-29T16:33:26.316Z"
     },
     {
       "id": "US-014",
@@ -342,14 +342,17 @@
         "cargo test passes"
       ],
       "priority": 14,
-      "status": "open",
+      "status": "in_progress",
       "dependsOn": [
         "US-005",
         "US-003",
         "US-010",
         "US-012"
       ],
-      "notes": ""
+      "notes": "",
+      "startedAt": "2026-03-29T16:33:26.401Z",
+      "updatedAt": "2026-03-29T16:33:26.401Z",
+      "completedAt": null
     },
     {
       "id": "US-015",
