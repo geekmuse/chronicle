@@ -11,6 +11,26 @@
 - **Current Version:** 0.1.0
 - **Status:** Early development
 
+## Quick Start — Quality Checks
+
+After **ANY** code change, run all quality checks:
+
+```bash
+cargo test && cargo clippy -- -D warnings && cargo fmt --check && cargo deny check
+```
+
+Individual commands:
+
+| Command | Purpose |
+|---------|---------|
+| `cargo test` | Run all unit and integration tests |
+| `cargo clippy -- -D warnings` | Lint with warnings as errors |
+| `cargo build` | Compile the project |
+| `cargo fmt --check` | Check formatting (fix with `cargo fmt`) |
+| `cargo deny check` | Verify dependency licenses against allowlist |
+
+> **Rule:** All five checks must pass before committing. The pre-commit hook enforces `cargo fmt --check`, `cargo clippy`, `cargo test`, and `cargo deny check`.
+
 ## Repository Structure
 
 ```
