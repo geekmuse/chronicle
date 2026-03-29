@@ -405,9 +405,322 @@ fn import_agent_sessions(p: &ImportParams<'_>) -> Result<(usize, usize)> {
 // ---------------------------------------------------------------------------
 
 /// Handle `chronicle sync [--dry-run] [--quiet]`.
-pub fn handle_sync(_dry_run: bool, _quiet: bool) -> Result<()> {
-    println!("not implemented: sync");
+pub fn handle_sync(dry_run: bool, quiet: bool) -> Result<()> {
+    let config_path = config::default_config_path();
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    sync_impl(dry_run, quiet, &config_path, &home)
+}
+
+/// Core sync logic, factored out for testability.
+///
+/// Executes the full bidirectional sync cycle (§14):
+/// 1. **Outgoing**: scan changed session files, canonicalize, merge, commit.
+/// 2. **Git exchange**: fetch from remote, integrate remote JSONL changes, push.
+/// 3. **Incoming**: de-canonicalize, apply partial history filter, write local.
+/// 4. **Bookkeeping**: update state cache and manifest.json.
+///
+/// `home` is injected so tests can use a temporary directory without touching
+/// the real `$HOME`.
+fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) -> Result<()> {
+    let cfg = config::load(Some(config_path), &CliOverrides::default())
+        .context("failed to load configuration")?;
+
+    // L3 warning always goes to stderr (not suppressed by --quiet).
+    if cfg.canonicalization.level >= 3 {
+        eprintln!("{L3_WARNING}");
+    }
+
+    let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
+    let canon_level = cfg.canonicalization.level;
+    let machine_name = non_empty_machine_name(&cfg.general.machine_name);
+    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let remote_url: Option<&str> = if cfg.storage.remote_url.is_empty() {
+        None
+    } else {
+        Some(cfg.storage.remote_url.as_str())
+    };
+    let follow_symlinks = cfg.general.follow_symlinks;
+
+    // -----------------------------------------------------------------------
+    // Load state cache (missing file → empty; all files treated as New).
+    // -----------------------------------------------------------------------
+    let cache_path = scan::StateCache::default_path();
+    let mut state_cache =
+        scan::StateCache::load(&cache_path).context("failed to load state cache")?;
+
+    // -----------------------------------------------------------------------
+    // Collect outgoing changes across enabled agents.
+    // -----------------------------------------------------------------------
+    let mut changed: Vec<ScannedChange> = Vec::new();
+
+    if cfg.agents.pi.enabled {
+        let source_dir = config::expand_path(&cfg.agents.pi.session_dir);
+        if source_dir.exists() {
+            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
+                Ok(entries) => {
+                    for e in entries
+                        .into_iter()
+                        .filter(|e| e.kind != scan::ChangeKind::Unchanged)
+                    {
+                        changed.push(ScannedChange {
+                            entry: e,
+                            source_dir: source_dir.clone(),
+                            repo_rel_base: "pi/sessions",
+                            is_pi: true,
+                        });
+                    }
+                }
+                Err(e) => eprintln!("  Warning: failed to scan Pi sessions: {e}"),
+            }
+        }
+    }
+
+    if cfg.agents.claude.enabled {
+        let source_dir = config::expand_path(&cfg.agents.claude.session_dir);
+        if source_dir.exists() {
+            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
+                Ok(entries) => {
+                    for e in entries
+                        .into_iter()
+                        .filter(|e| e.kind != scan::ChangeKind::Unchanged)
+                    {
+                        changed.push(ScannedChange {
+                            entry: e,
+                            source_dir: source_dir.clone(),
+                            repo_rel_base: "claude/projects",
+                            is_pi: false,
+                        });
+                    }
+                }
+                Err(e) => eprintln!("  Warning: failed to scan Claude sessions: {e}"),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Dry-run: describe all phases without writing.
+    // -----------------------------------------------------------------------
+    if dry_run {
+        let new_count = changed
+            .iter()
+            .filter(|c| c.entry.kind == scan::ChangeKind::New)
+            .count();
+        let mod_count = changed.len() - new_count;
+        println!("Dry run — sync would:");
+        println!(
+            "  [outgoing]  {} new + {} modified file(s) to commit",
+            new_count, mod_count
+        );
+        println!("  [git]       fetch → integrate remote changes → push");
+        println!("  [incoming]  materialize session files to local agent dirs");
+        return Ok(());
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1: Outgoing — canonicalize changed files, stage, commit.
+    // -----------------------------------------------------------------------
+    let manager = git::RepoManager::init_or_open(&repo_path, remote_url)
+        .context("failed to open git repository")?;
+
+    let mut pi_staged: Vec<PathBuf> = Vec::new();
+    let mut claude_staged: Vec<PathBuf> = Vec::new();
+    let mut total_new = 0usize;
+    let mut total_modified = 0usize;
+    let mut cache_updates: Vec<(String, scan::FileState)> = Vec::new();
+
+    for c in &changed {
+        let is_new = c.entry.kind == scan::ChangeKind::New;
+        match process_push_file(&PushFileParams {
+            entry: &c.entry,
+            source_dir: &c.source_dir,
+            repo_rel_base: c.repo_rel_base,
+            repo_path: &repo_path,
+            registry: &registry,
+            canon_level,
+            is_pi: c.is_pi,
+        }) {
+            Ok(Some(pushed)) => {
+                if is_new {
+                    total_new += 1;
+                } else {
+                    total_modified += 1;
+                }
+                if c.is_pi {
+                    pi_staged.push(pushed.staged_rel);
+                } else {
+                    claude_staged.push(pushed.staged_rel);
+                }
+                cache_updates.push((pushed.cache_key, pushed.file_state));
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("  Warning: skipping {}: {e}", c.entry.path.display()),
+        }
+    }
+
+    let pi_total = pi_staged.len();
+    let claude_total = claude_staged.len();
+    let all_staged: Vec<PathBuf> = pi_staged.into_iter().chain(claude_staged).collect();
+    let outgoing_count = all_staged.len();
+
+    let now = Utc::now();
+
+    // Prepare updated manifest (upsert last_sync for this machine).
+    let updated_manifest = build_updated_manifest(&manager, &machine_name, now)
+        .context("failed to build updated manifest")?;
+
+    if !all_staged.is_empty() {
+        // Stage session files.
+        let staged_refs: Vec<&Path> = all_staged.iter().map(|p| p.as_path()).collect();
+        manager
+            .stage_files(&staged_refs)
+            .context("failed to stage outgoing session files")?;
+
+        // Write and stage manifest.json alongside the session changes.
+        manager
+            .write_manifest(&updated_manifest)
+            .context("failed to write manifest")?;
+        let manifest_rel = PathBuf::from(".chronicle/manifest.json");
+        manager
+            .stage_files(&[manifest_rel.as_path()])
+            .context("failed to stage manifest")?;
+
+        let summary = git::SyncSummary {
+            new_files: total_new,
+            modified_files: total_modified,
+            pi_total,
+            claude_total,
+        };
+        let msg = git::format_sync_message(&machine_name, &now, &summary);
+        manager
+            .commit_if_staged(&msg, &machine_name)
+            .context("failed to create outgoing sync commit")?;
+
+        if !quiet {
+            println!(
+                "[outgoing] Committed {outgoing_count} file(s) ({total_new} new, {total_modified} modified)."
+            );
+        }
+    } else {
+        // No session changes — write manifest to disk only (no commit, idempotent).
+        manager
+            .write_manifest(&updated_manifest)
+            .context("failed to write manifest")?;
+        if !quiet {
+            println!("[outgoing] Nothing to commit.");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2: Git exchange — fetch, integrate remote changes, push.
+    //          Skipped when no remote URL is configured.
+    // -----------------------------------------------------------------------
+    if remote_url.is_some() {
+        let ring_buf =
+            errors::ring_buffer::RingBuffer::new(errors::ring_buffer::RingBuffer::default_path());
+
+        match manager.fetch("origin") {
+            Ok(()) => {}
+            Err(ref e) if git::is_network_error(e) => {
+                let rb_entry = errors::ring_buffer::ErrorEntry::new(
+                    errors::ring_buffer::Severity::Error,
+                    "git_error",
+                    format!("network error during fetch: {e}"),
+                );
+                let _ = ring_buf.append(rb_entry);
+                return Err(anyhow::anyhow!("sync fetch failed (network error): {e}"));
+            }
+            Err(e) => return Err(anyhow::anyhow!("sync fetch failed: {e}")),
+        }
+
+        let integrated = integrate_remote_changes(&manager, &machine_name)
+            .context("failed to integrate remote changes")?;
+
+        // Only push if the local repo has at least one commit.
+        if manager.repository().head().is_ok() {
+            match manager.push_with_retry("origin", || Ok(()), std::thread::sleep) {
+                Ok(()) => {
+                    if !quiet {
+                        println!(
+                            "[git]      {integrated} remote file(s) integrated; pushed to remote."
+                        );
+                    }
+                }
+                Err(e) => {
+                    let rb_entry = errors::ring_buffer::ErrorEntry::new(
+                        errors::ring_buffer::Severity::Error,
+                        "push_conflict",
+                        e.to_string(),
+                    );
+                    let _ = ring_buf.append(rb_entry);
+                    return Err(anyhow::anyhow!("sync push failed: {e}"));
+                }
+            }
+        } else if !quiet {
+            println!("[git]      No local commits yet — skipping push.");
+        }
+    } else if !quiet {
+        println!("[git]      No remote configured — skipping fetch/push.");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: Incoming — materialize repo working tree → local agent dirs.
+    // -----------------------------------------------------------------------
+    let materialized = materialize_repo_to_local(&repo_path, &cfg, &registry)
+        .context("failed to materialize session files")?;
+
+    if !quiet {
+        println!("[incoming] Materialized {materialized} file(s) to local agent dirs.");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bookkeeping: persist state cache after a successful sync.
+    // -----------------------------------------------------------------------
+    for (key, state) in cache_updates {
+        state_cache.files.insert(key, state);
+    }
+    state_cache
+        .save(&cache_path)
+        .context("failed to save state cache")?;
+
+    if !quiet {
+        println!("Sync complete.");
+    }
+
     Ok(())
+}
+
+/// Read the current manifest, upsert this machine's entry (setting
+/// `last_sync = now`), and return the updated struct without writing to disk.
+///
+/// Creates a new entry (with `first_seen = now`) if the machine has not yet
+/// been seen.
+fn build_updated_manifest(
+    manager: &git::RepoManager,
+    machine_name: &str,
+    now: DateTime<Utc>,
+) -> Result<git::Manifest> {
+    let mut manifest = manager
+        .read_manifest()
+        .context("failed to read manifest.json")?;
+
+    let os_name = if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+
+    let entry = manifest
+        .machines
+        .entry(machine_name.to_owned())
+        .or_insert_with(|| git::MachineEntry {
+            first_seen: now,
+            last_sync: None,
+            home_path: "{{SYNC_HOME}}".to_owned(),
+            os: os_name.to_owned(),
+        });
+    entry.last_sync = Some(now);
+
+    Ok(manifest)
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,6 +1526,15 @@ fn materialize_agent_dir(
             // Create local session directory if needed.
             fs::create_dir_all(&local_session_dir)
                 .with_context(|| format!("cannot create {}", local_session_dir.display()))?;
+
+            // Skip writing if local file already has identical content (idempotent sync).
+            if local_file_path.exists() {
+                if let Ok(existing) = fs::read_to_string(&local_file_path) {
+                    if existing == decanon_content {
+                        continue;
+                    }
+                }
+            }
 
             // Write file, preserving existing permissions (§11.5).
             write_preserving_permissions(&local_file_path, &decanon_content)?;
@@ -2482,6 +2804,274 @@ mod tests {
         assert!(
             local_session.join(newest).exists(),
             "newest file must be materialized"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // US-017: Sync tests
+    // -----------------------------------------------------------------------
+
+    fn write_sync_config(
+        config_path: &std::path::Path,
+        repo_path: &std::path::Path,
+        remote_path: &std::path::Path,
+        pi_session_dir: &std::path::Path,
+        claude_session_dir: &std::path::Path,
+        machine_name: &str,
+        pi_enabled: bool,
+        claude_enabled: bool,
+    ) {
+        let toml = format!(
+            "[general]\nmachine_name = \"{machine_name}\"\n\n\
+             [storage]\nrepo_path = \"{}\"\nremote_url = \"{}\"\n\n\
+             [agents.pi]\nenabled = {pi_enabled}\nsession_dir = \"{}\"\n\n\
+             [agents.claude]\nenabled = {claude_enabled}\nsession_dir = \"{}\"\n",
+            repo_path.display(),
+            remote_path.display(),
+            pi_session_dir.display(),
+            claude_session_dir.display(),
+        );
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(config_path, toml.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn sync_dry_run_does_not_create_repo() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let claude_sessions = dir.path().join("claude_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        // Create a Pi session file so there is something to report in dry-run.
+        let session_dir = pi_sessions.join(pi_session_dir_name(&home));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("s.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"1\"}\n",
+        )
+        .unwrap();
+
+        // Use write_import_config (no remote) — dry-run never reaches git init.
+        write_import_config(
+            &config_path,
+            &repo_path,
+            &pi_sessions,
+            &claude_sessions,
+            "test-machine",
+            true,
+            false,
+        );
+
+        sync_impl(true, false, &config_path, &home).unwrap();
+
+        assert!(
+            !repo_path.exists(),
+            "dry run must not create the repo directory"
+        );
+    }
+
+    #[test]
+    fn sync_commits_and_pushes_new_pi_session() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let repo_path = dir.path().join("repo");
+        let remote_path = dir.path().join("remote");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let claude_sessions = dir.path().join("claude_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        git2::Repository::init_bare(&remote_path).unwrap();
+
+        let session_dir = pi_sessions.join(pi_session_dir_name(&home));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("session.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"1\"}\n",
+        )
+        .unwrap();
+
+        write_sync_config(
+            &config_path,
+            &repo_path,
+            &remote_path,
+            &pi_sessions,
+            &claude_sessions,
+            "sync-machine",
+            true,
+            false,
+        );
+
+        sync_impl(false, true, &config_path, &home).unwrap();
+
+        // Canonical session dir must exist in the repo working tree.
+        let canonical_dir = repo_path
+            .join("pi")
+            .join("sessions")
+            .join("--{{SYNC_HOME}}-Dev-foo--");
+        assert!(
+            canonical_dir.exists(),
+            "canonical Pi session dir must exist after sync; sessions: {:?}",
+            std::fs::read_dir(repo_path.join("pi").join("sessions"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+
+        // Remote must have received the commit.
+        let bare = git2::Repository::open_bare(&remote_path).unwrap();
+        assert!(
+            bare.head().is_ok(),
+            "remote HEAD must exist after sync push"
+        );
+    }
+
+    #[test]
+    fn sync_updates_manifest_last_sync_for_machine() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let repo_path = dir.path().join("repo");
+        let remote_path = dir.path().join("remote");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let claude_sessions = dir.path().join("claude_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        git2::Repository::init_bare(&remote_path).unwrap();
+
+        // Session file triggers an outgoing commit; manifest is committed alongside it.
+        let session_dir = pi_sessions.join(pi_session_dir_name(&home));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("s.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"1\"}\n",
+        )
+        .unwrap();
+
+        write_sync_config(
+            &config_path,
+            &repo_path,
+            &remote_path,
+            &pi_sessions,
+            &claude_sessions,
+            "mani-machine",
+            true,
+            false,
+        );
+
+        sync_impl(false, true, &config_path, &home).unwrap();
+
+        // manifest.json must exist with last_sync set for this machine.
+        let manifest_path = repo_path.join(".chronicle").join("manifest.json");
+        assert!(
+            manifest_path.exists(),
+            "manifest.json must exist after sync"
+        );
+
+        let content = std::fs::read_to_string(&manifest_path).unwrap();
+        let manifest: git::Manifest = serde_json::from_str(&content).unwrap();
+        let entry = manifest.machines.get("mani-machine");
+        assert!(entry.is_some(), "machine entry must exist in manifest");
+        assert!(
+            entry.unwrap().last_sync.is_some(),
+            "last_sync must be set in manifest entry"
+        );
+    }
+
+    #[test]
+    fn sync_updates_state_cache_after_successful_sync() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let repo_path = dir.path().join("repo");
+        let remote_path = dir.path().join("remote");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let claude_sessions = dir.path().join("claude_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        git2::Repository::init_bare(&remote_path).unwrap();
+
+        let session_dir = pi_sessions.join(pi_session_dir_name(&home));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session_file = session_dir.join("cache-test.jsonl");
+        std::fs::write(&session_file, b"{\"type\":\"session\",\"id\":\"C\"}\n").unwrap();
+
+        write_sync_config(
+            &config_path,
+            &repo_path,
+            &remote_path,
+            &pi_sessions,
+            &claude_sessions,
+            "cache-machine",
+            true,
+            false,
+        );
+
+        sync_impl(false, true, &config_path, &home).unwrap();
+
+        // State cache must contain an entry keyed by the session file's absolute path.
+        let cache = scan::StateCache::load(&scan::StateCache::default_path()).unwrap();
+        let session_key = session_file.to_string_lossy().into_owned();
+        assert!(
+            cache.files.contains_key(&session_key),
+            "state cache must have entry for synced session file; keys: {:?}",
+            cache.files.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sync_is_idempotent_no_new_commit_when_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let repo_path = dir.path().join("repo");
+        let remote_path = dir.path().join("remote");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let claude_sessions = dir.path().join("claude_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        git2::Repository::init_bare(&remote_path).unwrap();
+
+        let session_dir = pi_sessions.join(pi_session_dir_name(&home));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("idempotent.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"X\"}\n",
+        )
+        .unwrap();
+
+        write_sync_config(
+            &config_path,
+            &repo_path,
+            &remote_path,
+            &pi_sessions,
+            &claude_sessions,
+            "idem-machine",
+            true,
+            false,
+        );
+
+        // First sync: new session file → creates a commit.
+        sync_impl(false, true, &config_path, &home).unwrap();
+
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let head_before = repo.head().unwrap().target().unwrap();
+
+        // Second sync: session file unchanged (state cache hit) → no new commit.
+        sync_impl(false, true, &config_path, &home).unwrap();
+
+        let head_after = repo.head().unwrap().target().unwrap();
+        assert_eq!(
+            head_before, head_after,
+            "no new commit must be created when sync has nothing to do"
         );
     }
 
