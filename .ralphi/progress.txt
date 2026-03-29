@@ -1,4 +1,19 @@
 ## Codebase Patterns
+- `push_impl(dry_run, config_path, home)` / `pull_impl(dry_run, config_path, home)` — testable cores of `handle_push` / `handle_pull`; inject home so tests don't touch real `$HOME`
+- `ScannedChange` struct bundles `entry`, `source_dir`, `repo_rel_base`, `is_pi` — collects scan results before deciding dry-run vs live path
+- `PushFileParams<'a>` / `PushedFile` — param bundle + result struct for `process_push_file`; keeps function under 7 arguments (clippy::too_many_arguments)
+- `process_push_file`: L1 dir canon → L2/L3 content canon → merge with repo version if exists → write; returns `Ok(None)` when merged result == repo content (nothing to stage)
+- `integrate_remote_changes(manager, machine_name)`: walks `refs/remotes/origin/main` (fallback `master`) tree via git2 tree walk collecting `(path, git2::Oid)` pairs, then resolves blobs; merges each changed JSONL file; stages + commits if anything changed
+- `materialize_repo_to_local(repo_path, cfg, registry)` / `materialize_agent_dir(...)`: walk repo session subdirs, `decanonicalize_*_dir` on each subdir name, `decanonicalize_line` per line, `write_preserving_permissions`
+- `write_preserving_permissions(dest, content)`: `#[cfg(unix)]` captures existing mode before write; new files use parent-dir mode `& 0o666` or `0o644`; non-unix just does `fs::write`
+- `non_empty_machine_name(name)`: returns `"unknown"` if empty; used as fallback in push/pull
+- `git2` crate usable directly in `cli/mod.rs` (direct Cargo dep); no `use git2` import needed — use full qualified paths like `git2::TreeWalkMode::PreOrder`
+- Push retry: `push_with_retry("origin", || Ok(()), std::thread::sleep)` — `on_rejection` is no-op for push-only (no fetch-merge cycle); exhaustion logged to ring buffer via `errors::ring_buffer::RingBuffer`
+- Pull fetch error handling: `Err(ref e) if git::is_network_error(e)` logs to ring buffer before returning; other fetch errors propagate directly
+- Remote tracking ref: try `refs/remotes/origin/main` then `refs/remotes/origin/master`; if neither exists → `Ok(0)` (no remote commits yet)
+- `git2::TreeWalkResult::Ok` is the return value needed from the tree walk closure (not `()`)
+
+
 - `cli::import_impl(agent, dry_run, config_path, home)` — testable core of `handle_import`; accepts injected home dir so tests don't touch real `$HOME`
 - `ImportParams<'a>` struct in `cli/mod.rs` — bundles all per-agent-import params to avoid clippy::too_many_arguments (>7 args)
 - `manager: Option<&git::RepoManager>` in `ImportParams` — `None` in dry-run mode; `import_agent_sessions` calls `.expect()` before using it (only reached in non-dry-run path)
@@ -464,4 +479,38 @@ Corrective Plan: N/A
     so check `raw.ends_with('\n')` and push it back after joining
   - Staged repo-relative paths must use forward slashes on all target platforms
     (Unix); `format!("{base}/{dir}/{file}")` is correct and safe here
+---
+
+## 2026-03-29 - US-015
+Session: iter-75db3c58 / loop-26ce4e61 iteration 15
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented `chronicle push` and `chronicle pull` commands in `src/cli/mod.rs`
+- Push (outgoing only):
+  - `push_impl` scans Pi/Claude session dirs for new/modified .jsonl files via `scan::scan_dir` + state cache
+  - `process_push_file` L1-canonicalizes dir name, L2/L3-canonicalizes content, merges with existing repo version
+  - Stages all changed files, creates sync commit, pushes with retry via `push_with_retry`
+  - On push exhaustion: logs to ring buffer (`errors::ring_buffer`) and returns error
+  - Updates state cache after successful push
+  - `--dry-run`: scans and reports counts without touching repo
+- Pull (incoming only):
+  - `pull_impl` fetches from origin, calls `integrate_remote_changes`, then `materialize_repo_to_local`
+  - `integrate_remote_changes` walks `refs/remotes/origin/main` tree via git2, merges each changed JSONL file at entry level, commits if anything changed
+  - `materialize_repo_to_local` / `materialize_agent_dir` walk repo working tree, decanonicalize dir names and content, write to local agent dirs
+  - `write_preserving_permissions` preserves existing Unix file permissions; new files default to parent-dir mode & 0o666 or 0o644
+  - Network errors on fetch logged to ring buffer
+  - `--dry-run`: prints message and returns without touching anything
+- New helper functions: `process_push_file`, `ScannedChange`, `PushedFile`, `PushFileParams`, `integrate_remote_changes`, `materialize_repo_to_local`, `materialize_agent_dir`, `write_preserving_permissions`, `non_empty_machine_name`
+- 8 new tests (258 total): push dry-run, push canonicalize+write, push skip-unchanged, push merge-new-entries, pull dry-run, pull materialize+decanon, write_preserving_permissions for new/existing files
+- Files changed: `src/cli/mod.rs`
+- **Learnings for future iterations:**
+  - `git2` crate paths usable directly in any module (e.g. `git2::TreeWalkMode::PreOrder`) — no `use git2;` import needed, just direct qualified paths
+  - Tree walk callback collects `(path, git2::Oid)` pairs; blobs resolved after walk completes (closure can't borrow repo mutably during walk)
+  - `push_with_retry("origin", || Ok(()), std::thread::sleep)` — pass `std::thread::sleep` directly (not a closure); clippy::redundant_closure fires on `|d| std::thread::sleep(d)`
+  - `!expr.is_some_and(|x| x == val)` simplifies to `expr.is_none_or(|x| x != val)` (clippy::nonminimal_bool)
+  - `#[cfg(unix)] let mode = {...};` followed by `#[cfg(unix)] { use ...; set_permissions(...); }` is the idiomatic pattern for Unix-only permission handling; on non-unix both blocks are compiled out
+  - `refs/remotes/origin/main` may not exist if the remote uses a different branch name; `or_else(|_| repo.find_reference("refs/remotes/origin/master"))` covers both common cases
+  - For push tests, a local bare repo (git2::Repository::init_bare) is the simplest way to exercise the full push path including retry logic
 ---
