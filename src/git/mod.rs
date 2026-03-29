@@ -1,8 +1,15 @@
-// Git repository management: init/open, working tree structure, and manifest.
-// US-010 implements this module.
-// US-011 adds fetch/push with exponential-backoff retry.
-// US-012 adds staging and commit formatting.
+// Git repository management: init/open, working tree structure, manifest,
+// fetch/push with retry, and commit formatting.
+// US-010: init/open, working tree, manifest.
+// US-011: fetch/push with exponential-backoff retry (fetch_push.rs).
+// US-012: staging and commit formatting.
 #![allow(dead_code)]
+
+mod fetch_push;
+#[allow(unused_imports)]
+pub use fetch_push::is_network_error;
+#[allow(unused_imports)]
+pub(crate) use fetch_push::run_push_retry;
 
 use std::{
     collections::HashMap,
@@ -36,7 +43,36 @@ pub enum GitError {
     /// `manifest.json` could not be parsed or serialized.
     #[error("manifest error: {0}")]
     Manifest(String),
+
+    /// Push was rejected by the remote because it has advanced past our local tip.
+    #[error("push rejected on '{refname}': {message}")]
+    PushRejected {
+        /// The git reference that was rejected.
+        refname: String,
+        /// Rejection message from the remote.
+        message: String,
+    },
+
+    /// All push retries were exhausted without success.
+    #[error("push failed after {attempts} attempt(s); remote repeatedly rejected")]
+    PushExhausted {
+        /// Total number of push attempts made (initial + retries).
+        attempts: usize,
+    },
 }
+
+// ---------------------------------------------------------------------------
+// Retry constants
+// ---------------------------------------------------------------------------
+
+/// Backoff delays (in seconds) before each push retry attempt.
+///
+/// Index `i` is the delay before retry `i+1`.  The first retry (`i = 0`) is
+/// immediate (0 s); subsequent retries wait 5 s and 25 s respectively.
+pub const PUSH_BACKOFF_SECS: [u64; 3] = [0, 5, 25];
+
+/// Maximum number of push retries (in addition to the initial attempt).
+pub const PUSH_MAX_RETRIES: usize = PUSH_BACKOFF_SECS.len();
 
 impl GitError {
     fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
