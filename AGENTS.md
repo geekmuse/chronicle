@@ -268,15 +268,15 @@ When investigating a tool, approach, or pattern:
 <!-- Agents: update this section as work progresses -->
 <!-- For detailed task breakdowns, see docs/tasks/ -->
 
-- [ ] Cargo.toml and initial crate structure
-- [ ] Config module (schema, loading, validation, machine name generation)
-- [ ] Canonicalization engine (L1 paths, L2 whitelisted fields, token registry)
-- [ ] Merge module (entry parsing, set-union, prefix verification)
-- [ ] Git module (repo init, fetch/push with retry, commit formatting)
-- [ ] Agent modules (Pi and Claude directory encoding / file naming)
-- [ ] CLI commands (init, import, sync, push, pull, status, errors, config, schedule)
-- [ ] Scanner (mtime/size change detection)
-- [ ] Scheduler (crontab install/uninstall/status)
-- [ ] Error ring buffer
-- [ ] Integration tests
+- [x] Cargo.toml and initial crate structure
+- [x] Config module (schema, loading, validation, machine name generation)
+- [x] Canonicalization engine (L1 paths, L2 whitelisted fields, token registry)
+- [x] Merge module (entry parsing, set-union, prefix verification)
+- [x] Git module (repo init, fetch/push with retry, commit formatting)
+- [x] Agent modules (Pi and Claude directory encoding / file naming)
+- [x] CLI commands (init, import, sync, push, pull, status, errors, config, schedule)
+- [x] Scanner (mtime/size change detection)
+- [x] Scheduler (crontab install/uninstall/status)
+- [x] Error ring buffer
+- [x] Integration tests
 - [ ] CI/CD pipeline

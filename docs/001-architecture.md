@@ -1,7 +1,7 @@
 ---
 date_created: 2026-03-29
 date_modified: 2026-03-29
-status: draft
+status: active
 audience: both
 cross_references:
   - docs/002-development-guide.md

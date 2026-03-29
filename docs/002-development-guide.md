@@ -1,7 +1,7 @@
 ---
 date_created: 2026-03-29
 date_modified: 2026-03-29
-status: draft
+status: active
 audience: both
 cross_references:
   - docs/001-architecture.md
@@ -103,53 +103,38 @@ chronicle/
 ├── Cargo.lock                     # Dependency lock file
 ├── src/
 │   ├── main.rs                    # CLI entry point (clap)
-│   ├── cli/                       # Command handlers
-│   │   ├── mod.rs
-│   │   ├── init.rs                # chronicle init
-│   │   ├── import.rs              # chronicle import
-│   │   ├── sync.rs                # chronicle sync
-│   │   ├── push.rs                # chronicle push
-│   │   ├── pull.rs                # chronicle pull
-│   │   ├── status.rs              # chronicle status
-│   │   ├── errors.rs              # chronicle errors
-│   │   ├── config.rs              # chronicle config
-│   │   └── schedule.rs            # chronicle schedule
+│   ├── lib.rs                     # Library root (exposes modules for tests)
+│   ├── cli/
+│   │   └── mod.rs                 # All CLI commands (init, import, sync, push, pull,
+│   │                              #   pull, status, errors, config, schedule)
 │   ├── config/                    # Configuration loading
 │   │   ├── mod.rs
 │   │   ├── schema.rs              # Serde structs for config.toml
 │   │   └── machine_name.rs        # adjective-animal name generator
 │   ├── canon/                     # Canonicalization engine
-│   │   ├── mod.rs
-│   │   ├── canonicalize.rs        # Local → canonical transforms
-│   │   ├── decanon.rs             # Canonical → local transforms
-│   │   ├── tokens.rs              # Token registry (SYNC_HOME + custom)
+│   │   ├── mod.rs                 # Token registry, canonicalize/decanon entry points
 │   │   ├── fields.rs              # L2 whitelisted field path walker
 │   │   └── levels.rs              # L1/L2/L3 dispatch
 │   ├── merge/                     # JSONL merge
 │   │   ├── mod.rs
 │   │   ├── entry.rs               # Entry identity (type + id), parsing
-│   │   ├── set_union.rs           # Grow-only set merge algorithm
-│   │   └── verify.rs              # Prefix verification
+│   │   └── set_union.rs           # Grow-only set merge + prefix verification
 │   ├── git/                       # Git operations
-│   │   ├── mod.rs
-│   │   ├── repo.rs                # Init, clone, working tree
+│   │   ├── mod.rs                 # Repo init, working tree management
 │   │   ├── fetch_push.rs          # Fetch, push with retry + backoff
 │   │   └── commit.rs              # Staging, commit message formatting
-│   ├── agents/                    # Agent-specific logic
+│   ├── agents/
+│   │   └── mod.rs                 # Pi and Claude dir encoding / file naming
+│   ├── scheduler/
 │   │   ├── mod.rs
-│   │   ├── pi.rs                  # Pi dir encoding, file naming
-│   │   └── claude.rs              # Claude dir encoding, file naming
-│   ├── scheduler/                 # Cron scheduling
+│   │   └── cron.rs                # Crontab read/write/install/uninstall
+│   ├── errors/
 │   │   ├── mod.rs
-│   │   └── cron.rs                # Crontab read/write/install
-│   ├── errors/                    # Error handling
-│   │   ├── mod.rs
-│   │   ├── ring_buffer.rs         # 30-entry error ring buffer
-│   │   └── types.rs               # Error category enum
-│   └── scan/                      # File change detection
-│       ├── mod.rs
-│       └── diff.rs                # mtime/size-based change detection
-├── tests/                         # Integration tests
+│   │   └── ring_buffer.rs         # 30-entry error ring buffer
+│   └── scan/
+│       └── mod.rs                 # mtime/size-based change detection
+├── tests/
+│   └── integration.rs             # 8 end-to-end multi-machine scenario tests
 ├── docs/                          # Documentation
 └── .editorconfig                  # Editor formatting rules
 ```

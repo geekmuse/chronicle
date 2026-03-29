@@ -1,3 +1,14 @@
+---
+date_created: 2026-03-29
+date_modified: 2026-03-29
+status: active
+audience: both
+cross_references:
+  - docs/001-architecture.md
+  - docs/002-development-guide.md
+  - AGENTS.md
+---
+
 # Chronicle — Agent Session History Sync
 
 ## Specification v1.0
