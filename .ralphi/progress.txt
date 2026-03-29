@@ -1,0 +1,128 @@
+## Codebase Patterns
+- `TokenRegistry` in `src/canon/mod.rs` — built via `from_config(&CanonicalizationConfig, &Path)`; exposes `canonicalize_pi_dir`, `canonicalize_claude_dir`, `decanonicalize_pi_dir`, `decanonicalize_claude_dir`
+- Canonicalization order: SYNC_HOME first, custom tokens after (applied to already-canonical form using canonical-encoded token values); de-canon reverses the order
+- `boundary_match(s, prefix)` helper: character after prefix in `s` must be `-` or end-of-string; prevents partial matches (e.g., `/Users/bradmatic2` ≠ `/Users/bradmatic`)
+- Custom tokens sorted by descending value-path length at construction time so most-specific prefix wins; only the first match applies (prefix-only replacement, so `break` after first hit is correct)
+- Canonical encoded form of a custom token value: encode the raw path with agent encoding, then apply SYNC_HOME prefix replacement to that encoded string — this is the pattern matched against the already-canonicalized directory inner string
+- `pi_encode_inner` / `claude_encode_inner` are module-private helpers; prefer `canonicalize_*_dir` / `decanonicalize_*_dir` in callers
+- `Agent` trait in `src/agents/mod.rs` — `session_dir`, `encode_dir`, `decode_dir`; `PiAgent` and `ClaudeAgent` are unit structs implementing it
+- Pi directory encoding: strip leading `/`, replace `/` with `-`, wrap with `--`; decoding is lossless only for components without `-`
+- Claude directory encoding: strip leading `/`, replace `/` and `.` with `-`, prefix with `-`; decoding is lossless only for components without `-` or `.`
+- Claude `decode_dir` explicitly rejects `--`-prefixed (Pi-format) names to catch cross-agent mistakes
+- `cargo fmt` must be run (not just `--check`) after `Write` tool outputs code; rustfmt reformats `let x = name.strip_prefix(...)` differently from `let x = name\n    .strip_prefix(...)`
+- Config module uses `pub(crate)` helpers (`apply_env_overrides`, `apply_cli_overrides`, `config_path_with_xdg_home`) to test precedence logic without mutating `std::env` (which is unsafe in parallel tests)
+- `write_all(b"raw bytes")` in tests instead of `writeln!(f, r#"..."#)` avoids `{{` / `}}` being consumed as escaped format braces by the `writeln!` macro
+- Separate `PiAgentConfig` / `ClaudeAgentConfig` structs needed because a shared `AgentConfig` can't have per-agent `session_dir` defaults with serde; distinct types each have their own `#[serde(default = "...")]` functions
+- `#[derive(Default)]` on `Config` works after removing manual `impl Default` that just called `field::default()` — clippy::derivable_impls catches these
+- `HistoryMode` enum uses `#[serde(rename_all = "lowercase")]` + `#[default]` on `Partial` variant for clean TOML deserialization
+- `cargo check` is fast after first compile; `cargo test` recompiles a separate test binary
+- ICU unicode crates (icu_normalizer_data, icu_properties_data) come in via git2→url→idna→icu_normalizer; first compile takes ~10min, cached afterwards
+- git2 pinned to 0.18 (not 0.19/0.20) to avoid icu_normalizer_data in the dependency chain
+- Dead-code for foundational error types: use `#![allow(dead_code)]` at the module level with a comment pointing to the stories that will wire it in
+- All cli handler stubs live in `src/cli/mod.rs`; main.rs only owns the clap struct and match dispatch
+---
+
+## 2026-03-29 - US-002
+Session: iter-b80f0cc5 / loop-26ce4e61 iteration 2
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented full configuration system per §8 of the spec
+- Created src/config/schema.rs: serde structs for all 6 config sections
+  ([general], [notifications], [storage], [canonicalization], [agents.pi],
+  [agents.claude], [sync]); each field has a #[serde(default)] with the §8.2
+  value; HistoryMode enum with lowercase serde rename; PiAgentConfig and
+  ClaudeAgentConfig are separate types (different session_dir defaults)
+- Created src/config/machine_name.rs: adjective-animal generator with static
+  ADJECTIVES (47) and ANIMALS (90) slices; uses rand::seq::SliceRandom;
+  4,200+ possible combinations; 4 unit tests
+- Rewrote src/config/mod.rs: load() function implementing CLI > env > file >
+  defaults precedence chain; apply_env_overrides() and apply_cli_overrides()
+  kept pub(crate) for test isolation; config_path_with_xdg_home() is
+  pub(crate) to test XDG logic without mutating std::env; expand_path() for
+  tilde expansion; 17 unit tests covering all acceptance criteria
+- Fixed cargo fmt formatting issues after initial write
+- Fixed writeln! brace escaping bug in test: `{{SYNC_PROJECTS}}` in a format
+  string becomes `{SYNC_PROJECTS}` — fixed by using write_all(b"...") instead
+- Fixed clippy::derivable_impls: `impl Default for Config` was manually
+  forwarding to sub-defaults; replaced with #[derive(Default)]
+- All quality checks pass: cargo fmt --check, cargo clippy -D warnings,
+  cargo test (21 pass), cargo deny check
+- **Learnings for future iterations:**
+  - writeln!(f, r#"..."#) in tests: `{{` / `}}` are STILL consumed by the
+    format macro even in raw strings — use f.write_all(b"...") for literal
+    byte content with no format interpolation
+  - std::env::set_var is `unsafe` in Rust 1.81+; avoid in tests by extracting
+    the XDG logic into a testable helper that accepts the value as a parameter
+  - clippy::derivable_impls fires when you manually implement Default by just
+    calling each field's default(); use #[derive(Default)] instead
+  - Separate agent config structs (PiAgentConfig, ClaudeAgentConfig) needed
+    when two TOML subsections share the same struct shape but have different
+    field defaults; serde can't parameterise default functions per-instance
+---
+
+## 2026-03-29 - US-003
+Session: iter-f0ddf726 / loop-26ce4e61 iteration 3
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented `Agent` trait and `PiAgent`/`ClaudeAgent` structs in `src/agents/mod.rs`
+- Pi: encode wraps path components (/ → -) with `--` delimiters; decode strips delimiters and restores /
+- Claude: encode replaces both / and . with `-`, prefixes with single `-`; decode strips prefix and restores /
+- 13 unit tests: simple encode/decode, session_dir, round-trips (simple paths), dot-in-path encode,
+  error paths (missing wrapper, Pi format rejected by Claude), cross-agent differentiation
+- `cargo fmt` reformatted the `decode_dir` chain in `ClaudeAgent` — always run `cargo fmt` (not `--check`) after writing code
+- `#![allow(dead_code)]` carried over at module level; will be removed when US-004/US-013/US-014 wire it in
+- Files changed: `src/agents/mod.rs`
+- **Learnings for future iterations:**
+  - Pi/Claude directory encoding is inherently lossy for path components containing `-` (Pi) or `-`/`.` (Claude); round-trip tests restrict to simple component names
+  - `str::strip_prefix("--").and_then(|s| s.strip_suffix("--"))` is idiomatic for validating both ends of a wrapper in one chain
+  - Add a `starts_with("--")` guard to Claude `decode_dir` before `strip_prefix('-')` — otherwise Pi-encoded names silently decode to garbage
+---
+
+## 2026-03-29 - US-004
+Session: iter-f1aacb91 / loop-26ce4e61 iteration 4
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented `TokenRegistry` in `src/canon/mod.rs`:
+  - `from_config(&CanonicalizationConfig, &Path)` builds the registry; custom tokens sorted longest-value-first
+  - `canonicalize_pi_dir` / `canonicalize_claude_dir` — L1 directory name canonicalization
+  - `decanonicalize_pi_dir` / `decanonicalize_claude_dir` — L1 directory name de-canonicalization
+  - `apply_tokens_to_inner` / `revert_tokens_from_inner` — internal helpers
+- `boundary_match` helper ensures `/Users/bradmatic2` does NOT match when home is `/Users/bradmatic`
+- Custom token application works in canonical space: raw token value is encoded via agent rules then SYNC_HOME'd to produce a canonical-encoded pattern that matches against the already-SYNC_HOME'd inner string
+- 25 unit tests covering all acceptance criteria
+- Files changed: `src/canon/mod.rs`
+- **Learnings for future iterations:**
+  - Custom tokens for L1 must be applied in their *canonical encoded* form — encode the raw path value with the agent's encoding rules, then apply SYNC_HOME to produce the pattern to search for in the canonical directory inner string
+  - `boundary_match` uses byte-offset indexing (`s[prefix.len()..]`) — safe here because all encoded path chars and token names are ASCII; document this assumption if Unicode home paths ever become a concern
+  - Only prefix replacement is needed for L1 (directory names are a single encoded path); `break` after first custom token match is correct
+  - De-canon order (custom tokens first, then SYNC_HOME) ensures that a token like `{{SYNC_PROJECTS}} = {{SYNC_HOME}}/Dev` gets fully expanded back to the local path
+---
+
+## PRD Run Context
+PRD Branch: ralph/initial-delivery
+Started: 2026-03-29T02:25:06.047Z
+---
+
+## 2026-03-29 - US-001
+Session: iter-cb54e7b0 / loop-26ce4e61 iteration 1
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented full Rust project scaffolding from scratch
+- Created src/ with 9 module directories: cli, config, canon, merge, git, agents, scheduler, errors, scan
+- main.rs: clap derive CLI with all 9 commands (init, import, sync, push, pull, status, errors, config, schedule); schedule has install/uninstall/status subcommands; all handlers print "not implemented" and return Ok
+- errors/mod.rs: ChronicleError with thiserror, 7 categories per §11.1, category() method, unit tests; #![allow(dead_code)] module-level until US-007/US-008 wire it in
+- Downgraded git2 0.19→0.18: icu_normalizer_data transitive dep (via url→idna v1.1→icu_normalizer) causes 10+ min first compile on 0.19; 0.18 also pulls it but it's already cached after first build
+- All quality checks pass: cargo fmt --check, cargo clippy -D warnings, cargo test (2 tests), cargo deny check
+- **Learnings for future iterations:**
+  - First `cargo test` takes much longer than `cargo check` (separate test binary, includes proptest/tempfile/rusty-fork)
+  - `pub` items in a binary crate DO get dead_code warnings if never referenced from main; use `#![allow(dead_code)]` at module level for foundational scaffolding
+  - git commit hooks run `ralphi check` which calls all configured quality commands — keep those passing before committing
+---
