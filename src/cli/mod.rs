@@ -1,13 +1,14 @@
 use anyhow::{Context as _, Result};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::canon::levels::L3_WARNING;
 use crate::canon::TokenRegistry;
-use crate::config::{self, CliOverrides};
+use crate::config::{self, schema::HistoryMode, CliOverrides};
 use crate::errors;
 use crate::git;
 use crate::merge::set_union::{merge_jsonl, NullReporter};
@@ -943,6 +944,25 @@ fn integrate_remote_changes(manager: &git::RepoManager, machine_name: &str) -> R
     Ok(changed)
 }
 
+/// Controls how many session files are materialized per directory during a
+/// pull (§7 — partial history materialization).
+#[derive(Debug, Clone)]
+enum MaterializeFilter {
+    /// Materialize all files in every session directory.
+    Full,
+    /// Materialize only the N most-recent files per session directory.
+    Partial(usize),
+}
+
+impl MaterializeFilter {
+    fn from_config(cfg: &config::Config) -> Self {
+        match cfg.sync.history_mode {
+            HistoryMode::Full => MaterializeFilter::Full,
+            HistoryMode::Partial => MaterializeFilter::Partial(cfg.sync.partial_max_count),
+        }
+    }
+}
+
 /// De-canonicalize all JSONL files in the repo working tree and write them
 /// to the local agent session directories (materialization — §14 step 5).
 ///
@@ -952,14 +972,16 @@ fn materialize_repo_to_local(
     cfg: &config::Config,
     registry: &TokenRegistry,
 ) -> Result<usize> {
+    let filter = MaterializeFilter::from_config(cfg);
     let mut total = 0usize;
 
     if cfg.agents.pi.enabled {
         let pi_sessions_repo = repo_path.join("pi").join("sessions");
         if pi_sessions_repo.exists() {
             let local_pi_dir = config::expand_path(&cfg.agents.pi.session_dir);
-            total += materialize_agent_dir(&pi_sessions_repo, &local_pi_dir, registry, true)
-                .context("Pi session materialization failed")?;
+            total +=
+                materialize_agent_dir(&pi_sessions_repo, &local_pi_dir, registry, true, &filter)
+                    .context("Pi session materialization failed")?;
         }
     }
 
@@ -967,17 +989,116 @@ fn materialize_repo_to_local(
         let claude_projects_repo = repo_path.join("claude").join("projects");
         if claude_projects_repo.exists() {
             let local_claude_dir = config::expand_path(&cfg.agents.claude.session_dir);
-            total +=
-                materialize_agent_dir(&claude_projects_repo, &local_claude_dir, registry, false)
-                    .context("Claude project materialization failed")?;
+            total += materialize_agent_dir(
+                &claude_projects_repo,
+                &local_claude_dir,
+                registry,
+                false,
+                &filter,
+            )
+            .context("Claude project materialization failed")?;
         }
     }
 
     Ok(total)
 }
 
+/// Parse the ISO 8601 timestamp embedded in a Pi session filename.
+///
+/// Pi filenames use the format `YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl`.
+/// Returns `None` if the filename does not match the expected pattern.
+fn pi_filename_timestamp(filename: &str) -> Option<DateTime<Utc>> {
+    // Strip the `.jsonl` suffix, then split off the UUID at the first `_`.
+    let stem = filename.strip_suffix(".jsonl")?;
+    let (ts_part, _uuid) = stem.split_once('_')?;
+
+    // ts_part: `YYYY-MM-DDTHH-MM-SS-mmmZ`
+    // Reconstruct as RFC 3339: `YYYY-MM-DDTHH:MM:SS.mmmZ`
+    let (date_part, time_part) = ts_part.split_once('T')?;
+    let mut segments = time_part.splitn(4, '-');
+    let hh = segments.next()?;
+    let mm = segments.next()?;
+    let ss = segments.next()?;
+    let ms_z = segments.next()?; // e.g. "642Z"
+    let ms = ms_z.strip_suffix('Z')?;
+    let rfc = format!("{date_part}T{hh}:{mm}:{ss}.{ms}Z");
+    DateTime::parse_from_rfc3339(&rfc)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Determine the earliest entry timestamp in a JSONL file by reading it and
+/// inspecting each line's `timestamp`, `created_at`, or `createdAt` field.
+///
+/// Returns `None` if the file cannot be read or contains no recognisable
+/// timestamps.
+fn claude_earliest_file_timestamp(path: &Path) -> Option<DateTime<Utc>> {
+    let content = fs::read_to_string(path).ok()?;
+    content
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            for field in ["timestamp", "created_at", "createdAt"] {
+                if let Some(s) = v.get(field).and_then(|f| f.as_str()) {
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                        return Some(dt.with_timezone(&Utc));
+                    }
+                }
+            }
+            None
+        })
+        .min()
+}
+
+/// Given a slice of `(filename, full_repo_path)` pairs for `.jsonl` files in
+/// one session directory, return the set of filenames that should be
+/// materialised under the given `max_count` limit.
+///
+/// - Pi recency: timestamp embedded in the filename (§7.2).
+/// - Claude recency: earliest entry timestamp inside the file (§7.2).
+///
+/// Files whose recency cannot be determined are treated as oldest (sorted to
+/// the tail) so they are included only if there is room in the window.
+fn select_partial_session_files(
+    files: &[(String, PathBuf)],
+    max_count: usize,
+    is_pi: bool,
+) -> HashSet<String> {
+    // Build (timestamp_opt, filename) pairs.
+    let mut scored: Vec<(Option<DateTime<Utc>>, &str)> = files
+        .iter()
+        .map(|(name, path)| {
+            let ts = if is_pi {
+                pi_filename_timestamp(name)
+            } else {
+                claude_earliest_file_timestamp(path)
+            };
+            (ts, name.as_str())
+        })
+        .collect();
+
+    // Sort descending (newest first).  `None` timestamps sort last (oldest).
+    scored.sort_by(|a, b| match (a.0, b.0) {
+        (Some(ta), Some(tb)) => tb.cmp(&ta),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.1.cmp(b.1), // deterministic tie-break
+    });
+
+    scored
+        .into_iter()
+        .take(max_count)
+        .map(|(_, name)| name.to_owned())
+        .collect()
+}
+
 /// De-canonicalize JSONL files from one agent's repo directory and write them
 /// to the corresponding local session directory.
+///
+/// When `filter` is [`MaterializeFilter::Partial`], only the N most-recent
+/// session files per subdirectory are written.  Existing local files outside
+/// the window are left untouched (§7.2 — no deletion propagation).
 ///
 /// Returns the number of files written.
 fn materialize_agent_dir(
@@ -985,6 +1106,7 @@ fn materialize_agent_dir(
     local_base: &Path,
     registry: &TokenRegistry,
     is_pi: bool,
+    filter: &MaterializeFilter,
 ) -> Result<usize> {
     let mut total = 0usize;
 
@@ -1013,6 +1135,7 @@ fn materialize_agent_dir(
         };
         let local_session_dir = local_base.join(&local_dir_name);
 
+        // Collect all .jsonl files in this session subdirectory.
         let session_entries = match fs::read_dir(dir_entry.path()) {
             Ok(e) => e,
             Err(e) => {
@@ -1021,6 +1144,7 @@ fn materialize_agent_dir(
             }
         };
 
+        let mut all_files: Vec<(String, PathBuf)> = Vec::new();
         for file_entry in session_entries {
             let file_entry = match file_entry {
                 Ok(e) => e,
@@ -1030,19 +1154,36 @@ fn materialize_agent_dir(
                 }
             };
             let file_path = file_entry.path();
-
             if file_path.extension().is_none_or(|ext| ext != "jsonl") {
                 continue;
             }
-
             let filename = file_path
                 .file_name()
                 .unwrap()
                 .to_string_lossy()
                 .into_owned();
-            let local_file_path = local_session_dir.join(&filename);
+            all_files.push((filename, file_path));
+        }
 
-            let raw = match fs::read_to_string(&file_path) {
+        // Apply partial history filter (§7).
+        let selected: Option<HashSet<String>> = match filter {
+            MaterializeFilter::Full => None, // all files selected
+            MaterializeFilter::Partial(max_count) => {
+                Some(select_partial_session_files(&all_files, *max_count, is_pi))
+            }
+        };
+
+        for (filename, file_path) in &all_files {
+            // Skip files outside the materialization window.
+            if let Some(ref set) = selected {
+                if !set.contains(filename) {
+                    continue;
+                }
+            }
+
+            let local_file_path = local_session_dir.join(filename);
+
+            let raw = match fs::read_to_string(file_path) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("  Warning: cannot read {}: {e}", file_path.display());
@@ -2143,6 +2284,250 @@ mod tests {
             std::fs::read_to_string(&dest).unwrap(),
             "updated content",
             "file content must be updated"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // US-016: Partial history materialization
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn pi_filename_timestamp_parses_valid_name() {
+        use chrono::Timelike as _;
+        let ts = pi_filename_timestamp(
+            "2026-02-17T03-39-53-642Z_af036bd6-3fa8-492b-a656-93d5bbbd6878.jsonl",
+        );
+        assert!(ts.is_some(), "should parse a valid Pi filename timestamp");
+        let ts = ts.unwrap();
+        // Check date/time components — avoids a fragile hardcoded Unix timestamp.
+        assert_eq!(ts.date_naive().to_string(), "2026-02-17");
+        assert_eq!(ts.hour(), 3);
+        assert_eq!(ts.minute(), 39);
+        assert_eq!(ts.second(), 53);
+    }
+
+    #[test]
+    fn pi_filename_timestamp_returns_none_for_non_pi_name() {
+        // Claude-style UUID filename — no embedded timestamp
+        assert!(pi_filename_timestamp("8f6009e7-c052-4d98-b792-5f6c3bbbd8f9.jsonl").is_none());
+        // No underscore separator
+        assert!(pi_filename_timestamp("session.jsonl").is_none());
+        // Wrong suffix
+        assert!(pi_filename_timestamp("2026-02-17T03-39-53-642Z_uuid.json").is_none());
+    }
+
+    #[test]
+    fn claude_earliest_file_timestamp_finds_min() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        // Three entries — earliest is m1 at 2024-01-01
+        std::fs::write(
+            &path,
+            r#"{"type":"message","id":"m2","timestamp":"2024-06-15T12:00:00Z"}
+{"type":"session","id":"s1","timestamp":"2024-01-01T00:00:00Z"}
+{"type":"message","id":"m3","timestamp":"2025-03-10T08:30:00Z"}
+"#,
+        )
+        .unwrap();
+        let ts = claude_earliest_file_timestamp(&path);
+        assert!(ts.is_some());
+        assert_eq!(
+            ts.unwrap().to_rfc3339(),
+            "2024-01-01T00:00:00+00:00",
+            "earliest timestamp should be selected"
+        );
+    }
+
+    #[test]
+    fn claude_earliest_file_timestamp_returns_none_for_no_timestamps() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, r#"{"type":"message","id":"m1"}"#).unwrap();
+        assert!(claude_earliest_file_timestamp(&path).is_none());
+    }
+
+    #[test]
+    fn select_partial_session_files_pi_keeps_newest() {
+        // Build three Pi-style filenames with different timestamps.
+        let files: Vec<(String, PathBuf)> = vec![
+            (
+                "2025-01-01T00-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000001.jsonl".to_owned(),
+                PathBuf::new(),
+            ),
+            (
+                "2026-06-01T00-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000002.jsonl".to_owned(),
+                PathBuf::new(),
+            ),
+            (
+                "2024-03-15T12-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000003.jsonl".to_owned(),
+                PathBuf::new(),
+            ),
+        ];
+        // Keep 2 most recent.
+        let selected = select_partial_session_files(&files, 2, true);
+        assert_eq!(selected.len(), 2);
+        // Newest two should be 2026 and 2025.
+        assert!(selected
+            .contains("2026-06-01T00-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000002.jsonl"));
+        assert!(selected
+            .contains("2025-01-01T00-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000001.jsonl"));
+        assert!(!selected
+            .contains("2024-03-15T12-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000003.jsonl"));
+    }
+
+    #[test]
+    fn select_partial_session_files_max_count_larger_than_set() {
+        let files: Vec<(String, PathBuf)> = vec![(
+            "2026-01-01T00-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000001.jsonl".to_owned(),
+            PathBuf::new(),
+        )];
+        let selected = select_partial_session_files(&files, 100, true);
+        assert_eq!(
+            selected.len(),
+            1,
+            "should return all files when max > count"
+        );
+    }
+
+    #[test]
+    fn materialize_agent_dir_full_writes_all_files() {
+        use crate::config::schema::CanonicalizationConfig;
+
+        let dir = TempDir::new().unwrap();
+        let repo_agent_dir = dir.path().join("pi").join("sessions");
+        let session_subdir = repo_agent_dir.join("--Users-testuser-Dev-proj--");
+        std::fs::create_dir_all(&session_subdir).unwrap();
+
+        // Write 3 Pi session files.
+        let names = [
+            "2024-01-01T00-00-00-000Z_aaaa0001-0000-0000-0000-000000000001.jsonl",
+            "2024-06-01T00-00-00-000Z_aaaa0002-0000-0000-0000-000000000002.jsonl",
+            "2025-01-01T00-00-00-000Z_aaaa0003-0000-0000-0000-000000000003.jsonl",
+        ];
+        for name in &names {
+            std::fs::write(
+                session_subdir.join(name),
+                r#"{"type":"session","id":"s1","timestamp":"2024-01-01T00:00:00Z"}
+"#,
+            )
+            .unwrap();
+        }
+
+        let local_base = dir.path().join("local_pi_sessions");
+        let home = dir.path().to_path_buf();
+        let registry = TokenRegistry::from_config(&CanonicalizationConfig::default(), &home);
+
+        let count = materialize_agent_dir(
+            &repo_agent_dir,
+            &local_base,
+            &registry,
+            true,
+            &MaterializeFilter::Full,
+        )
+        .unwrap();
+
+        assert_eq!(count, 3, "full mode should materialize all 3 files");
+    }
+
+    #[test]
+    fn materialize_agent_dir_partial_limits_per_subdir() {
+        use crate::config::schema::CanonicalizationConfig;
+
+        let dir = TempDir::new().unwrap();
+        let repo_agent_dir = dir.path().join("pi").join("sessions");
+        let session_subdir = repo_agent_dir.join("--Users-testuser-Dev-proj--");
+        std::fs::create_dir_all(&session_subdir).unwrap();
+
+        // Write 3 files; partial window = 2.
+        let names = [
+            "2024-01-01T00-00-00-000Z_aaaa0001-0000-0000-0000-000000000001.jsonl",
+            "2024-06-01T00-00-00-000Z_aaaa0002-0000-0000-0000-000000000002.jsonl",
+            "2025-01-01T00-00-00-000Z_aaaa0003-0000-0000-0000-000000000003.jsonl",
+        ];
+        for name in &names {
+            std::fs::write(
+                session_subdir.join(name),
+                r#"{"type":"session","id":"s1","timestamp":"2024-01-01T00:00:00Z"}
+"#,
+            )
+            .unwrap();
+        }
+
+        let local_base = dir.path().join("local_pi_sessions");
+        let home = dir.path().to_path_buf();
+        let registry = TokenRegistry::from_config(&CanonicalizationConfig::default(), &home);
+
+        let count = materialize_agent_dir(
+            &repo_agent_dir,
+            &local_base,
+            &registry,
+            true,
+            &MaterializeFilter::Partial(2),
+        )
+        .unwrap();
+
+        assert_eq!(
+            count, 2,
+            "partial mode should materialize only 2 (newest) files"
+        );
+
+        // The oldest file should NOT have been written.
+        let local_session = local_base.join("--Users-testuser-Dev-proj--");
+        let oldest = "2024-01-01T00-00-00-000Z_aaaa0001-0000-0000-0000-000000000001.jsonl";
+        assert!(
+            !local_session.join(oldest).exists(),
+            "oldest file must NOT be materialized in partial mode"
+        );
+        let newest = "2025-01-01T00-00-00-000Z_aaaa0003-0000-0000-0000-000000000003.jsonl";
+        assert!(
+            local_session.join(newest).exists(),
+            "newest file must be materialized"
+        );
+    }
+
+    #[test]
+    fn materialize_agent_dir_partial_does_not_delete_existing_local_files() {
+        use crate::config::schema::CanonicalizationConfig;
+
+        let dir = TempDir::new().unwrap();
+        let repo_agent_dir = dir.path().join("pi").join("sessions");
+        let session_subdir = repo_agent_dir.join("--Users-testuser-Dev-proj--");
+        std::fs::create_dir_all(&session_subdir).unwrap();
+
+        // Only one file in repo.
+        let new_file = "2025-01-01T00-00-00-000Z_aaaa0003-0000-0000-0000-000000000003.jsonl";
+        std::fs::write(
+            session_subdir.join(new_file),
+            r#"{"type":"session","id":"s1","timestamp":"2025-01-01T00:00:00Z"}
+"#,
+        )
+        .unwrap();
+
+        // Pre-place an old file locally (simulates a file outside the window
+        // that was previously materialised on this machine).
+        let local_base = dir.path().join("local_pi_sessions");
+        let local_session = local_base.join("--Users-testuser-Dev-proj--");
+        std::fs::create_dir_all(&local_session).unwrap();
+        let pre_existing = "2023-01-01T00-00-00-000Z_aaaa0000-0000-0000-0000-000000000000.jsonl";
+        std::fs::write(local_session.join(pre_existing), "old content\n").unwrap();
+
+        let home = dir.path().to_path_buf();
+        let registry = TokenRegistry::from_config(&CanonicalizationConfig::default(), &home);
+
+        // Partial window = 1 (only the new file should be written).
+        materialize_agent_dir(
+            &repo_agent_dir,
+            &local_base,
+            &registry,
+            true,
+            &MaterializeFilter::Partial(1),
+        )
+        .unwrap();
+
+        // Pre-existing local file must still be present (no deletion).
+        assert!(
+            local_session.join(pre_existing).exists(),
+            "pre-existing local file outside window must NOT be deleted"
         );
     }
 }
