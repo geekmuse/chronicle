@@ -426,5 +426,49 @@ mod tests {
                 prop_assert_eq!(&orig, &rest);
             }
         }
+
+        /// L2 round-trip with a random home path (§15.3).
+        ///
+        /// Varies both the user component of the home directory and the subpath
+        /// to exercise `canonicalize_line(level=2)` → `decanonicalize_line`.
+        #[test]
+        fn prop_l2_round_trip_random_home(
+            user in "[a-zA-Z][a-zA-Z0-9]{2,10}",
+            subpath in arb_subpath(),
+        ) {
+            let home = format!("/Users/{user}");
+            let r = reg(&home);
+            let full_path = format!("{home}/{subpath}");
+            let line = format!(
+                r#"{{"type":"message","cwd":"{full_path}","id":"1"}}"#
+            );
+            let canonical = r.canonicalize_line(&line, 2).unwrap();
+            let restored  = r.decanonicalize_line(&canonical).unwrap();
+            let orig: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let rest: serde_json::Value = serde_json::from_str(&restored).unwrap();
+            prop_assert_eq!(orig, rest, "L2 round-trip failed (home={})", home);
+        }
+
+        /// L3 round-trip with a random home path (§15.3).
+        ///
+        /// Embeds the full path inside a freeform `content` field so that
+        /// L3 scanning is exercised end-to-end with a randomly generated home.
+        #[test]
+        fn prop_l3_round_trip_random_home(
+            user in "[a-zA-Z][a-zA-Z0-9]{2,10}",
+            subpath in arb_subpath(),
+        ) {
+            let home = format!("/Users/{user}");
+            let r = reg(&home);
+            let full_path = format!("{home}/{subpath}");
+            let line = format!(
+                r#"{{"type":"message","content":"file at {full_path} end","id":"1"}}"#
+            );
+            let canonical = r.canonicalize_line(&line, 3).unwrap();
+            let restored  = r.decanonicalize_line(&canonical).unwrap();
+            let orig: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let rest: serde_json::Value = serde_json::from_str(&restored).unwrap();
+            prop_assert_eq!(orig, rest, "L3 round-trip failed (home={})", home);
+        }
     }
 }

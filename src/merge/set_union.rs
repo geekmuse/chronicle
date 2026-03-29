@@ -784,4 +784,171 @@ mod tests {
             }
         );
     }
+
+    // ── Property-based tests (US-020) ─────────────────────────────────────────
+
+    use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    fn pa() -> &'static Path {
+        Path::new("a.jsonl")
+    }
+    fn pb() -> &'static Path {
+        Path::new("b.jsonl")
+    }
+    fn pc() -> &'static Path {
+        Path::new("c.jsonl")
+    }
+
+    /// Build a JSONL string from a slice of raw entry lines.
+    fn to_jsonl(lines: &[String]) -> String {
+        if lines.is_empty() {
+            String::new()
+        } else {
+            lines.join("\n") + "\n"
+        }
+    }
+
+    /// Extract the set of `"type:id"` key strings from a JSONL content string.
+    ///
+    /// Implemented directly with `serde_json` so the helper is independent of
+    /// the internal `parse_entry` function.
+    fn key_set(content: &str) -> BTreeSet<String> {
+        content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| {
+                let ty = v.get("type")?.as_str()?.to_owned();
+                let id = v
+                    .get("id")
+                    .or_else(|| v.get("uuid"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                Some(format!("{ty}:{id}"))
+            })
+            .collect()
+    }
+
+    /// Strategy: generate at most `max` JSONL message entries with unique IDs.
+    ///
+    /// IDs use `"<prefix><index:04>"` — caller passes a distinct prefix per
+    /// strategy so that two generated sets are guaranteed to be disjoint.
+    fn arb_entries(prefix: &'static str, max: usize) -> impl Strategy<Value = Vec<String>> {
+        prop::collection::vec((0u64..24u64, 0u64..60u64, 0u64..60u64), 0..=max).prop_map(
+            move |timestamps| {
+                timestamps
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (h, m, s))| {
+                        format!(
+                            r#"{{"type":"message","id":"{}{:04}","timestamp":"2024-01-01T{:02}:{:02}:{:02}Z"}}"#,
+                            prefix, i, h, m, s
+                        )
+                    })
+                    .collect()
+            },
+        )
+    }
+
+    proptest! {
+        /// Commutativity: the entry-key SET is the same regardless of which
+        /// file is "remote" and which is "local" (§15.3).
+        ///
+        /// Disjoint ID spaces (`"a*"` vs `"b*"`) avoid conflict-resolution
+        /// differences so the grow-only set-union property is exercised directly.
+        #[test]
+        fn prop_merge_commutativity(
+            a_lines in arb_entries("a", 5),
+            b_lines in arb_entries("b", 5),
+        ) {
+            let a = to_jsonl(&a_lines);
+            let b = to_jsonl(&b_lines);
+
+            let out_ab = merge_jsonl(&a, pa(), &b, pb(), &NullReporter);
+            let out_ba = merge_jsonl(&b, pa(), &a, pb(), &NullReporter);
+
+            let keys_ab = key_set(&out_ab.content);
+            let keys_ba = key_set(&out_ba.content);
+            prop_assert_eq!(keys_ab, keys_ba, "commutativity: entry-key sets differ");
+        }
+
+        /// Associativity: the entry-key SET of `merge(merge(A,B), C)` equals
+        /// the entry-key set of `merge(A, merge(B,C))` (§15.3).
+        #[test]
+        fn prop_merge_associativity(
+            a_lines in arb_entries("a", 4),
+            b_lines in arb_entries("b", 4),
+            c_lines in arb_entries("c", 4),
+        ) {
+            let a = to_jsonl(&a_lines);
+            let b = to_jsonl(&b_lines);
+            let c = to_jsonl(&c_lines);
+
+            // (A ∪ B) ∪ C
+            let ab   = merge_jsonl(&a, pa(), &b, pb(), &NullReporter).content;
+            let ab_c = merge_jsonl(&ab, pa(), &c, pc(), &NullReporter);
+
+            // A ∪ (B ∪ C)
+            let bc   = merge_jsonl(&b, pb(), &c, pc(), &NullReporter).content;
+            let a_bc = merge_jsonl(&a, pa(), &bc, pb(), &NullReporter);
+
+            let keys_abc  = key_set(&ab_c.content);
+            let keys_a_bc = key_set(&a_bc.content);
+            prop_assert_eq!(keys_abc, keys_a_bc, "associativity: entry-key sets differ");
+        }
+
+        /// Idempotency: `merge(A, A)` contains exactly the same entries as A,
+        /// with no conflicts (§15.3).
+        #[test]
+        fn prop_merge_idempotency(a_lines in arb_entries("x", 6)) {
+            let a = to_jsonl(&a_lines);
+            let out = merge_jsonl(&a, pa(), &a, pa(), &NullReporter);
+
+            // No conflicts: identical entries share identical raw content.
+            prop_assert!(
+                out.conflicts.is_empty(),
+                "idempotency: conflicts detected in merge(A, A)"
+            );
+
+            // Same entry-key set as the original.
+            let orig_keys   = key_set(&a);
+            let merged_keys = key_set(&out.content);
+            prop_assert_eq!(
+                orig_keys,
+                merged_keys,
+                "idempotency: key set changed after merge(A, A)"
+            );
+        }
+
+        /// Superset: every entry from A and every entry from B appears in
+        /// `merge(A, B)` (§15.3).
+        #[test]
+        fn prop_merge_superset(
+            a_lines in arb_entries("a", 5),
+            b_lines in arb_entries("b", 5),
+        ) {
+            let a = to_jsonl(&a_lines);
+            let b = to_jsonl(&b_lines);
+
+            let out = merge_jsonl(&a, pa(), &b, pb(), &NullReporter);
+            let merged_keys = key_set(&out.content);
+
+            for k in key_set(&a) {
+                prop_assert!(
+                    merged_keys.contains(&k),
+                    "superset: A-entry '{}' missing from merge(A, B)",
+                    k
+                );
+            }
+            for k in key_set(&b) {
+                prop_assert!(
+                    merged_keys.contains(&k),
+                    "superset: B-entry '{}' missing from merge(A, B)",
+                    k
+                );
+            }
+        }
+    }
 }

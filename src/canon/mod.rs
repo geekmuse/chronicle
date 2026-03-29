@@ -994,4 +994,76 @@ mod tests {
             }
         }
     }
+
+    // ── Property-based L1 round-trip tests (US-020) ───────────────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// L1 Pi directory round-trip with a random home-path user component (§15.3).
+        ///
+        /// Constructs a valid `--inner--` directory name whose inner string
+        /// starts with the Pi-encoded home, then verifies
+        /// `decanon_pi(canon_pi(name)) == name`.
+        #[test]
+        fn prop_l1_pi_round_trip(
+            user in "[a-zA-Z][a-zA-Z0-9]{2,10}",
+            subs in prop::collection::vec("[a-zA-Z][a-zA-Z0-9]{0,8}", 0..=4),
+        ) {
+            let home = format!("/Users/{user}");
+            let reg = registry(&home);
+
+            // Pi-encoded home for "/Users/<user>" is "Users-<user>".
+            // Build: "--Users-<user>[-sub1[-sub2...]]--"
+            let mut inner = format!("Users-{user}");
+            for c in &subs {
+                inner.push('-');
+                inner.push_str(c);
+            }
+            let name = format!("--{inner}--");
+
+            let canonical = reg.canonicalize_pi_dir(&name);
+            let restored  = reg.decanonicalize_pi_dir(&canonical);
+            prop_assert_eq!(
+                &restored,
+                &name,
+                "Pi L1 round-trip failed for name={} home={}",
+                name,
+                home
+            );
+        }
+
+        /// L1 Claude directory round-trip with a random home-path user component (§15.3).
+        ///
+        /// Constructs a valid `-inner` directory name and verifies
+        /// `decanon_claude(canon_claude(name)) == name`.
+        #[test]
+        fn prop_l1_claude_round_trip(
+            user in "[a-zA-Z][a-zA-Z0-9]{2,10}",
+            subs in prop::collection::vec("[a-zA-Z][a-zA-Z0-9]{0,8}", 0..=4),
+        ) {
+            let home = format!("/Users/{user}");
+            let reg = registry(&home);
+
+            // Claude-encoded home for "/Users/<user>" is "Users-<user>"
+            // (generated components have no dots, so encoding == Pi encoding).
+            // Build: "-Users-<user>[-sub1[-sub2...]]"
+            let mut inner = format!("Users-{user}");
+            for c in &subs {
+                inner.push('-');
+                inner.push_str(c);
+            }
+            let name = format!("-{inner}");
+
+            let canonical = reg.canonicalize_claude_dir(&name);
+            let restored  = reg.decanonicalize_claude_dir(&canonical);
+            prop_assert_eq!(
+                &restored,
+                &name,
+                "Claude L1 round-trip failed for name={} home={}",
+                name,
+                home
+            );
+        }
+    }
 }
