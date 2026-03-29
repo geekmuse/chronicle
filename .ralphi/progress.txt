@@ -391,3 +391,32 @@ Corrective Plan: N/A
   - Fetch with wildcard refspec "+refs/heads/*:refs/remotes/origin/*" works
     correctly against a local bare repo that has been pushed to
 ---
+
+## 2026-03-29 - US-013
+Session: iter-0831e2f7 / loop-26ce4e61 iteration 13
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented `chronicle init` command in `src/cli/mod.rs`
+- Replaces stub with full implementation:
+  - Loads existing config via `config::load()` (XDG-compliant path)
+  - Generates machine name via `config::machine_name::generate()` if `machine_name` is empty
+  - Applies `--remote` flag to `storage.remote_url` when provided
+  - TTY-guarded stdin prompt for remote URL when still empty (`std::io::IsTerminal`, no `atty` dep)
+  - Emits `L3_WARNING` to stderr when `canonicalization.level >= 3`
+  - Writes serialized TOML config (creates parent directories as needed)
+  - Calls `RepoManager::init_or_open` + `ensure_working_tree` + `ensure_manifest`
+  - Prints confirmation: machine name, config path, repo path, remote URL (if set)
+  - Idempotent: `load()` reads existing config; name generation gated on empty check; `init_or_open` is idempotent
+- Added `init_with_config_path()` test helper to avoid touching real home dir in tests
+- 8 unit tests: config creation, name generation, name preservation, remote flag, repo structure, idempotency, manifest existence, TOML validity
+- 243 total tests; all pass; cargo fmt, clippy -D warnings, cargo deny pass
+- Files changed: `src/cli/mod.rs`
+- **Learnings for future iterations:**
+  - `std::io::IsTerminal` (Rust 1.70+, stable) replaces `atty` crate for TTY detection — prefer std
+  - `toml::to_string_pretty(&cfg)` produces valid, human-readable TOML from any `#[derive(Serialize)]` struct
+  - Test helpers that duplicate the core init logic (rather than calling `handle_init`) avoid the real home dir and allow injecting a tempdir config path
+  - `config::load()` on an existing file is read-only; the init handler owns the write-back step, enabling idempotent re-initialization
+  - `cargo fmt` reformats multi-line `.with_context(|| { format!(...) })?` as `.with_context(|| format!(...))?` — write compact form to avoid fmt diffs
+---
