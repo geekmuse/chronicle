@@ -1592,8 +1592,140 @@ fn non_empty_machine_name(name: &str) -> String {
 
 /// Handle `chronicle status`.
 pub fn handle_status() -> Result<()> {
-    println!("not implemented: status");
+    let config_path = config::default_config_path();
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    status_impl(&config_path, &home)
+}
+
+/// Testable core of `handle_status` — accepts injected paths.
+fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
+    let cfg = config::load(Some(config_path), &CliOverrides::default())
+        .context("failed to load configuration")?;
+
+    // --- Machine name -------------------------------------------------------
+    let machine = if cfg.general.machine_name.is_empty() {
+        "(not configured — run chronicle init)".to_owned()
+    } else {
+        cfg.general.machine_name.clone()
+    };
+    println!("Machine       : {machine}");
+    println!("Config file   : {}", config_path.display());
+
+    // --- Last sync time from manifest ---------------------------------------
+    let repo_path = expand_home(&cfg.storage.repo_path, home);
+    let last_sync_str = if repo_path.exists() {
+        match git::RepoManager::init_or_open(&repo_path, None) {
+            Ok(manager) => match manager.read_manifest() {
+                Ok(manifest) => {
+                    if let Some(entry) = manifest.machines.get(&cfg.general.machine_name) {
+                        match entry.last_sync {
+                            Some(t) => t.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                            None => "(never synced)".to_owned(),
+                        }
+                    } else {
+                        "(never synced)".to_owned()
+                    }
+                }
+                Err(e) => format!("(error reading manifest: {e})"),
+            },
+            Err(_) => "(no repository — run chronicle init)".to_owned(),
+        }
+    } else {
+        "(no repository — run chronicle init)".to_owned()
+    };
+    println!("Last sync     : {last_sync_str}");
+
+    // --- Pending local changes via scanner ----------------------------------
+    let follow_symlinks = cfg.general.follow_symlinks;
+    let state_cache = scan::StateCache::load(&scan::StateCache::default_path()).unwrap_or_default();
+
+    let mut pending_new = 0usize;
+    let mut pending_mod = 0usize;
+
+    if cfg.agents.pi.enabled {
+        let source_dir = expand_home(&cfg.agents.pi.session_dir, home);
+        if source_dir.exists() {
+            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
+                Ok(entries) => {
+                    for e in &entries {
+                        match e.kind {
+                            scan::ChangeKind::New => pending_new += 1,
+                            scan::ChangeKind::Modified => pending_mod += 1,
+                            scan::ChangeKind::Unchanged => {}
+                        }
+                    }
+                }
+                Err(e) => eprintln!("  Warning: failed to scan Pi sessions: {e}"),
+            }
+        }
+    }
+
+    if cfg.agents.claude.enabled {
+        let source_dir = expand_home(&cfg.agents.claude.session_dir, home);
+        if source_dir.exists() {
+            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
+                Ok(entries) => {
+                    for e in &entries {
+                        match e.kind {
+                            scan::ChangeKind::New => pending_new += 1,
+                            scan::ChangeKind::Modified => pending_mod += 1,
+                            scan::ChangeKind::Unchanged => {}
+                        }
+                    }
+                }
+                Err(e) => eprintln!("  Warning: failed to scan Claude sessions: {e}"),
+            }
+        }
+    }
+
+    if pending_new + pending_mod == 0 {
+        println!("Pending       : (none — up to date)");
+    } else {
+        println!("Pending       : {pending_new} new, {pending_mod} modified");
+    }
+
+    // --- Remote URL ---------------------------------------------------------
+    if cfg.storage.remote_url.is_empty() {
+        println!("Remote URL    : (not configured)");
+    } else {
+        println!("Remote URL    : {}", cfg.storage.remote_url);
+    }
+
+    // --- Agent status -------------------------------------------------------
+    println!("\nAgents:");
+    println!(
+        "  Pi    : {} | {}",
+        if cfg.agents.pi.enabled {
+            "enabled "
+        } else {
+            "disabled"
+        },
+        cfg.agents.pi.session_dir
+    );
+    println!(
+        "  Claude: {} | {}",
+        if cfg.agents.claude.enabled {
+            "enabled "
+        } else {
+            "disabled"
+        },
+        cfg.agents.claude.session_dir
+    );
+
     Ok(())
+}
+
+/// Expand a `~/…` path using the injected `home` directory instead of
+/// `dirs::home_dir()`.  Falls back to [`config::expand_path`] for
+/// non-tilde paths.
+fn expand_home(path: &str, home: &Path) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        home.join(rest)
+    } else if path == "~" {
+        home.to_path_buf()
+    } else {
+        PathBuf::from(path)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1601,8 +1733,46 @@ pub fn handle_status() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Handle `chronicle errors [--limit <n>]`.
-pub fn handle_errors(_limit: Option<usize>) -> Result<()> {
-    println!("not implemented: errors");
+pub fn handle_errors(limit: Option<usize>) -> Result<()> {
+    use crate::errors::ring_buffer::RingBuffer;
+    errors_impl(limit, &RingBuffer::default_path())
+}
+
+/// Testable core of `handle_errors` — accepts an injected ring buffer path.
+fn errors_impl(limit: Option<usize>, errors_path: &Path) -> Result<()> {
+    use crate::errors::ring_buffer::{RingBuffer, Severity};
+
+    let ring_buf = RingBuffer::new(errors_path.to_path_buf());
+    let entries = ring_buf.read(limit).context("failed to read error log")?;
+
+    if entries.is_empty() {
+        println!("No errors recorded.");
+        return Ok(());
+    }
+
+    for entry in &entries {
+        let severity_str = match entry.severity {
+            Severity::Error => "ERROR",
+            Severity::Warning => "WARN ",
+            Severity::Info => "INFO ",
+        };
+        let ts = entry.timestamp.format("%Y-%m-%d %H:%M:%S UTC");
+        print!("[{ts}] {severity_str}  {}", entry.category);
+        if let Some(file) = &entry.file {
+            print!("  {file}");
+        }
+        println!();
+        println!("  {}", entry.message);
+        if let Some(detail) = &entry.detail {
+            println!("  detail: {detail}");
+        }
+        println!();
+    }
+
+    let shown = entries.len();
+    let suffix = if shown == 1 { "" } else { "s" };
+    println!("{shown} error{suffix} shown.");
+
     Ok(())
 }
 
@@ -1611,8 +1781,158 @@ pub fn handle_errors(_limit: Option<usize>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Handle `chronicle config [<key>] [<value>]`.
-pub fn handle_config(_key: Option<String>, _value: Option<String>) -> Result<()> {
-    println!("not implemented: config");
+pub fn handle_config(key: Option<String>, value: Option<String>) -> Result<()> {
+    let config_path = config::default_config_path();
+    config_impl(key, value, &config_path)
+}
+
+/// Testable core of `handle_config` — accepts an injected config path.
+fn config_impl(key: Option<String>, value: Option<String>, config_path: &Path) -> Result<()> {
+    let mut cfg = config::load(Some(config_path), &CliOverrides::default())
+        .context("failed to load configuration")?;
+
+    match (key.as_deref(), value.as_deref()) {
+        // No args: print full config as TOML.
+        (None, _) => {
+            let toml_str =
+                toml::to_string_pretty(&cfg).context("failed to serialize configuration")?;
+            print!("{toml_str}");
+        }
+
+        // Key only: print value.
+        (Some(k), None) => {
+            let val =
+                get_config_value(&cfg, k).with_context(|| format!("unknown config key: {k}"))?;
+            println!("{val}");
+        }
+
+        // Key + value: set and save.
+        (Some(k), Some(v)) => {
+            set_config_value(&mut cfg, k, v).with_context(|| format!("failed to set {k} = {v}"))?;
+            if let Some(parent) = config_path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create config dir {}", parent.display()))?;
+            }
+            let toml_str =
+                toml::to_string_pretty(&cfg).context("failed to serialize configuration")?;
+            fs::write(config_path, &toml_str).with_context(|| {
+                format!("failed to write config file {}", config_path.display())
+            })?;
+            println!("✓ {k} = {v}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Return the string representation of `key` in `cfg`.
+///
+/// Keys use dotted notation (`general.machine_name`).  The special alias
+/// `machine-name` (or `machine_name`) maps to `general.machine_name`.
+fn get_config_value(cfg: &config::Config, key: &str) -> Result<String> {
+    // Normalise hyphens → underscores so `machine-name` == `machine_name`.
+    let norm = key.replace('-', "_");
+    let val = match norm.as_str() {
+        // Special alias.
+        "machine_name" => cfg.general.machine_name.clone(),
+        // [general]
+        "general.machine_name" => cfg.general.machine_name.clone(),
+        "general.sync_interval" => cfg.general.sync_interval.clone(),
+        "general.log_level" => cfg.general.log_level.clone(),
+        "general.follow_symlinks" => cfg.general.follow_symlinks.to_string(),
+        // [notifications]
+        "notifications.on_error" => cfg.notifications.on_error.to_string(),
+        "notifications.on_success" => cfg.notifications.on_success.to_string(),
+        // [storage]
+        "storage.repo_path" => cfg.storage.repo_path.clone(),
+        "storage.remote_url" => cfg.storage.remote_url.clone(),
+        "storage.branch" => cfg.storage.branch.clone(),
+        // [canonicalization]
+        "canonicalization.home_token" => cfg.canonicalization.home_token.clone(),
+        "canonicalization.level" => cfg.canonicalization.level.to_string(),
+        // [agents.pi]
+        "agents.pi.enabled" => cfg.agents.pi.enabled.to_string(),
+        "agents.pi.session_dir" => cfg.agents.pi.session_dir.clone(),
+        // [agents.claude]
+        "agents.claude.enabled" => cfg.agents.claude.enabled.to_string(),
+        "agents.claude.session_dir" => cfg.agents.claude.session_dir.clone(),
+        // [sync]
+        "sync.history_mode" => match cfg.sync.history_mode {
+            HistoryMode::Full => "full".to_owned(),
+            HistoryMode::Partial => "partial".to_owned(),
+        },
+        "sync.partial_max_count" => cfg.sync.partial_max_count.to_string(),
+        _ => anyhow::bail!("unknown config key: {key}"),
+    };
+    Ok(val)
+}
+
+/// Set `key` to `value` in `cfg` (in-memory; caller must write to disk).
+fn set_config_value(cfg: &mut config::Config, key: &str, value: &str) -> Result<()> {
+    let norm = key.replace('-', "_");
+    match norm.as_str() {
+        // Special alias.
+        "machine_name" => cfg.general.machine_name = value.to_owned(),
+        // [general]
+        "general.machine_name" => cfg.general.machine_name = value.to_owned(),
+        "general.sync_interval" => cfg.general.sync_interval = value.to_owned(),
+        "general.log_level" => cfg.general.log_level = value.to_owned(),
+        "general.follow_symlinks" => {
+            cfg.general.follow_symlinks = value
+                .parse::<bool>()
+                .map_err(|_| anyhow::anyhow!("expected true or false, got: {value}"))?;
+        }
+        // [notifications]
+        "notifications.on_error" => {
+            cfg.notifications.on_error = value
+                .parse::<bool>()
+                .map_err(|_| anyhow::anyhow!("expected true or false, got: {value}"))?;
+        }
+        "notifications.on_success" => {
+            cfg.notifications.on_success = value
+                .parse::<bool>()
+                .map_err(|_| anyhow::anyhow!("expected true or false, got: {value}"))?;
+        }
+        // [storage]
+        "storage.repo_path" => cfg.storage.repo_path = value.to_owned(),
+        "storage.remote_url" => cfg.storage.remote_url = value.to_owned(),
+        "storage.branch" => cfg.storage.branch = value.to_owned(),
+        // [canonicalization]
+        "canonicalization.home_token" => cfg.canonicalization.home_token = value.to_owned(),
+        "canonicalization.level" => {
+            cfg.canonicalization.level = value
+                .parse::<u8>()
+                .map_err(|_| anyhow::anyhow!("expected a number 1–3, got: {value}"))?;
+        }
+        // [agents.pi]
+        "agents.pi.enabled" => {
+            cfg.agents.pi.enabled = value
+                .parse::<bool>()
+                .map_err(|_| anyhow::anyhow!("expected true or false, got: {value}"))?;
+        }
+        "agents.pi.session_dir" => cfg.agents.pi.session_dir = value.to_owned(),
+        // [agents.claude]
+        "agents.claude.enabled" => {
+            cfg.agents.claude.enabled = value
+                .parse::<bool>()
+                .map_err(|_| anyhow::anyhow!("expected true or false, got: {value}"))?;
+        }
+        "agents.claude.session_dir" => cfg.agents.claude.session_dir = value.to_owned(),
+        // [sync]
+        "sync.history_mode" => {
+            cfg.sync.history_mode = match value {
+                "full" => HistoryMode::Full,
+                "partial" => HistoryMode::Partial,
+                _ => anyhow::bail!("expected 'full' or 'partial', got: {value}"),
+            };
+        }
+        "sync.partial_max_count" => {
+            cfg.sync.partial_max_count = value
+                .parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("expected a positive integer, got: {value}"))?;
+        }
+        _ => anyhow::bail!("unknown config key: {key}"),
+    }
     Ok(())
 }
 
@@ -3118,6 +3438,279 @@ mod tests {
         assert!(
             local_session.join(pre_existing).exists(),
             "pre-existing local file outside window must NOT be deleted"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // US-018: status, errors, config
+    // -----------------------------------------------------------------------
+
+    /// Write a minimal config for status/config tests.
+    fn write_status_config(
+        config_path: &std::path::Path,
+        repo_path: &std::path::Path,
+        pi_session_dir: &std::path::Path,
+        machine_name: &str,
+    ) {
+        let toml = format!(
+            "[general]\nmachine_name = \"{machine_name}\"\n\n\
+             [storage]\nrepo_path = \"{}\"\n\n\
+             [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
+             [agents.claude]\nenabled = false\n",
+            repo_path.display(),
+            pi_session_dir.display(),
+        );
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(config_path, toml).unwrap();
+    }
+
+    // --- status -------------------------------------------------------------
+
+    #[test]
+    fn status_shows_machine_name_and_no_repo_message() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo"); // does NOT exist
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        write_status_config(&config_path, &repo_path, &pi_sessions, "test-machine");
+
+        // Should succeed without panicking.
+        status_impl(&config_path, &home).unwrap();
+    }
+
+    #[test]
+    fn status_counts_pending_new_files() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        // Create a session subdir with one .jsonl file.
+        let session_sub = pi_sessions.join("--Users-foo-proj--");
+        std::fs::create_dir_all(&session_sub).unwrap();
+        std::fs::write(
+            session_sub.join("session.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"1\"}\n",
+        )
+        .unwrap();
+
+        // Init repo so manifest reads are possible.
+        git::RepoManager::init_or_open(&repo_path, None)
+            .unwrap()
+            .ensure_working_tree()
+            .unwrap();
+
+        write_status_config(&config_path, &repo_path, &pi_sessions, "test-machine");
+
+        // Should succeed; pending count is at least 1 (state cache is empty).
+        status_impl(&config_path, &home).unwrap();
+    }
+
+    #[test]
+    fn status_shows_last_sync_from_manifest() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        let manager = git::RepoManager::init_or_open(&repo_path, None).unwrap();
+        manager.ensure_working_tree().unwrap();
+        manager.ensure_manifest().unwrap();
+
+        // Write a manifest with a last_sync timestamp for our machine.
+        let mut manifest = manager.read_manifest().unwrap();
+        manifest.machines.insert(
+            "sync-machine".to_owned(),
+            git::MachineEntry {
+                first_seen: chrono::Utc::now(),
+                last_sync: Some(chrono::Utc::now()),
+                home_path: "{{SYNC_HOME}}".to_owned(),
+                os: "macos".to_owned(),
+            },
+        );
+        manager.write_manifest(&manifest).unwrap();
+
+        write_status_config(&config_path, &repo_path, &pi_sessions, "sync-machine");
+
+        // Should succeed; manifest entry should produce a formatted timestamp.
+        status_impl(&config_path, &home).unwrap();
+    }
+
+    // --- errors -------------------------------------------------------------
+
+    #[test]
+    fn errors_no_entries_prints_none_message() {
+        let dir = TempDir::new().unwrap();
+        let errors_path = dir.path().join("errors.jsonl");
+
+        // Empty file → "No errors recorded."
+        errors_impl(None, &errors_path).unwrap();
+    }
+
+    #[test]
+    fn errors_shows_all_entries() {
+        use crate::errors::ring_buffer::{ErrorEntry, RingBuffer, Severity};
+
+        let dir = TempDir::new().unwrap();
+        let errors_path = dir.path().join("errors.jsonl");
+        let rb = RingBuffer::new(errors_path.clone());
+
+        rb.append(
+            ErrorEntry::new(Severity::Error, "git_error", "network timeout")
+                .with_detail("exhausted 3 retries"),
+        )
+        .unwrap();
+        rb.append(
+            ErrorEntry::new(Severity::Warning, "prefix_mismatch", "entries differ")
+                .with_file("pi/sessions/--foo--/s.jsonl"),
+        )
+        .unwrap();
+
+        // Should not error; exercises the display path.
+        errors_impl(None, &errors_path).unwrap();
+    }
+
+    #[test]
+    fn errors_limit_respected() {
+        use crate::errors::ring_buffer::{ErrorEntry, RingBuffer, Severity};
+
+        let dir = TempDir::new().unwrap();
+        let errors_path = dir.path().join("errors.jsonl");
+        let rb = RingBuffer::new(errors_path.clone());
+
+        for i in 0..10u32 {
+            rb.append(ErrorEntry::new(
+                Severity::Info,
+                "io_error",
+                format!("msg {i}"),
+            ))
+            .unwrap();
+        }
+
+        // Limit=3 → should only read 3 entries without error.
+        errors_impl(Some(3), &errors_path).unwrap();
+    }
+
+    // --- config -------------------------------------------------------------
+
+    /// Write the simplest valid config for config command tests.
+    fn write_minimal_config(config_path: &std::path::Path, repo_path: &std::path::Path) {
+        let toml = format!("[storage]\nrepo_path = \"{}\"\n", repo_path.display());
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(config_path, toml).unwrap();
+    }
+
+    #[test]
+    fn config_no_args_prints_toml() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        // No key or value → prints TOML; should not error.
+        config_impl(None, None, &config_path).unwrap();
+    }
+
+    #[test]
+    fn config_key_reads_value() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        // Read storage.repo_path.
+        config_impl(Some("storage.repo_path".to_owned()), None, &config_path).unwrap();
+    }
+
+    #[test]
+    fn config_machine_name_alias_reads_value() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+
+        let toml = format!(
+            "[general]\nmachine_name = \"friendly-fox\"\n\n[storage]\nrepo_path = \"{}\"\n",
+            repo_path.display()
+        );
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, toml).unwrap();
+
+        // `machine-name` is the special alias per spec §9.1.
+        config_impl(Some("machine-name".to_owned()), None, &config_path).unwrap();
+    }
+
+    #[test]
+    fn config_key_value_sets_and_persists() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        // Set storage.remote_url.
+        config_impl(
+            Some("storage.remote_url".to_owned()),
+            Some("git@github.com:user/sessions.git".to_owned()),
+            &config_path,
+        )
+        .unwrap();
+
+        // Reload and verify.
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.storage.remote_url, "git@github.com:user/sessions.git");
+    }
+
+    #[test]
+    fn config_machine_name_alias_sets_value() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        config_impl(
+            Some("machine-name".to_owned()),
+            Some("jolly-jaguar".to_owned()),
+            &config_path,
+        )
+        .unwrap();
+
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.general.machine_name, "jolly-jaguar");
+    }
+
+    #[test]
+    fn config_unknown_key_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        let result = config_impl(Some("does.not.exist".to_owned()), None, &config_path);
+        assert!(result.is_err(), "unknown key should return an error");
+    }
+
+    #[test]
+    fn config_history_mode_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        // Set to "full".
+        config_impl(
+            Some("sync.history_mode".to_owned()),
+            Some("full".to_owned()),
+            &config_path,
+        )
+        .unwrap();
+
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(
+            cfg.sync.history_mode,
+            crate::config::schema::HistoryMode::Full
         );
     }
 }
