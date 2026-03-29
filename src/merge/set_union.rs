@@ -1,10 +1,14 @@
 // Grow-only set merge algorithm for JSONL session files (§5.2).
-// Items here are consumed by US-007 (prefix verification) and the full sync
-// pipeline (US-015/US-017). Allow dead-code until those callers are wired in.
+// Items here are consumed by the full sync pipeline (US-015/US-017).
+// Allow dead-code until those callers are wired in.
 #![allow(dead_code)]
 //
-// This module implements steps 1, 3, 4, and 5 of the merge algorithm.
-// Step 2 (prefix verification / conflict detection) is added in US-007.
+// This module implements all five steps of §5.2:
+//   1. Parse both files into entry sets
+//   2. Prefix verification (§5.4): common entries must be byte-identical
+//   3. Compute the set-union
+//   4. Sort: header first, then ascending timestamp (stable, remote-first tie-break)
+//   5. Serialise back to JSONL
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +28,63 @@ pub struct MalformedLine {
     pub snippet: String,
 }
 
+/// Interface for recording prefix-mismatch incidents.
+///
+/// The real implementation (US-008) will write entries to the error ring
+/// buffer. Until that story is complete, callers may pass [`NullReporter`]
+/// to discard reports.
+pub trait ConflictReporter {
+    /// Called when a common entry (same [`EntryKey`]) carries different raw
+    /// content in the local and remote versions of a file (§5.4).
+    ///
+    /// # Arguments
+    ///
+    /// * `file`       — path to the file being merged.
+    /// * `entry_key`  — composite key of the conflicting entry.
+    /// * `local_raw`  — raw JSON from the local version.
+    /// * `remote_raw` — raw JSON from the remote version (this version wins).
+    fn report_prefix_mismatch(
+        &self,
+        file: &Path,
+        entry_key: &EntryKey,
+        local_raw: &str,
+        remote_raw: &str,
+    );
+}
+
+/// A no-op [`ConflictReporter`].
+///
+/// Used in tests and until US-008 wires in the real error ring buffer.
+#[derive(Debug, Default)]
+pub struct NullReporter;
+
+impl ConflictReporter for NullReporter {
+    fn report_prefix_mismatch(
+        &self,
+        _file: &Path,
+        _entry_key: &EntryKey,
+        _local_raw: &str,
+        _remote_raw: &str,
+    ) {
+    }
+}
+
+/// A conflict record produced when a common entry carries different content
+/// in the local and remote versions of a file (§5.4).
+///
+/// The remote version wins in all conflict cases.
+#[derive(Debug, Clone)]
+pub struct PrefixConflict {
+    /// Path of the file being merged (as provided to [`merge_jsonl`]).
+    pub file: PathBuf,
+    /// Composite key of the conflicting entry.
+    pub entry_key: EntryKey,
+    /// Raw JSON from the **local** version of the entry.
+    pub local_raw: String,
+    /// Raw JSON from the **remote** version (the version that wins).
+    pub remote_raw: String,
+}
+
 /// Output of a grow-only set merge operation.
 #[derive(Debug)]
 pub struct MergeOutput {
@@ -35,6 +96,9 @@ pub struct MergeOutput {
     pub content: String,
     /// Malformed lines that were skipped during parsing.
     pub malformed: Vec<MalformedLine>,
+    /// Entries that were present in both local and remote with differing
+    /// content; the remote version was used for each (§5.4).
+    pub conflicts: Vec<PrefixConflict>,
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -114,18 +178,24 @@ fn parse_file(
 /// * `remote_path`    — path used for warning messages about the remote file.
 /// * `local_content`  — content of the local working-tree version.
 /// * `local_path`     — path used for warning messages about the local file.
+/// * `reporter`       — receives an incident record for each prefix mismatch
+///   detected (§5.4). Pass [`NullReporter`] to discard reports until
+///   US-008 wires in the real error ring buffer.
 ///
 /// # Algorithm
 ///
 /// 1. Both files are parsed into entry sets keyed by [`EntryKey`].
-/// 2. The union is computed: remote entries populate the set first; local
-///    entries are added only when their key is not already present (remote wins
-///    for identical keys with divergent content — verification/logging deferred
-///    to US-007).
-/// 3. The merged set is sorted: session header first, then all other entries
+/// 2. **Prefix verification** (§5.4): for every entry present in **both**
+///    files, the raw content is compared byte-by-byte. A mismatch triggers a
+///    `tracing::warn!`, a call to `reporter`, and a [`PrefixConflict`] record
+///    in the output. Remote version wins in every case.
+/// 3. The union is computed: remote entries populate the set first; local-only
+///    entries are added; the remote version is kept for all common entries
+///    regardless of whether they matched.
+/// 4. The merged set is sorted: session header first, then all other entries
 ///    by timestamp ascending. Ties are broken by source (remote before local)
-///    then by original line position (stable sort).
-/// 4. The sorted entries are serialised back to JSONL.
+///    then by original line position (strict total order).
+/// 5. The sorted entries are serialised back to JSONL.
 ///
 /// Malformed lines are skipped with a warning (§5.5).
 #[must_use]
@@ -134,6 +204,7 @@ pub fn merge_jsonl(
     remote_path: &Path,
     local_content: &str,
     local_path: &Path,
+    reporter: &dyn ConflictReporter,
 ) -> MergeOutput {
     let mut malformed = Vec::new();
 
@@ -141,15 +212,48 @@ pub fn merge_jsonl(
     let local_entries = parse_file(local_content, local_path, Source::Local, &mut malformed);
 
     // Build the union keyed by EntryKey.
-    // Remote entries win when both sides carry the same key.
+    // Remote entries populate first; remote wins on all key collisions.
     let mut key_map: HashMap<EntryKey, TaggedEntry> = HashMap::new();
+    let mut conflicts: Vec<PrefixConflict> = Vec::new();
 
     for tagged in remote_entries {
         key_map.insert(tagged.entry.key.clone(), tagged);
     }
+
+    // Step 2 (§5.2 / §5.4): prefix verification.
+    // For every entry present in both files, verify byte-identical raw content.
+    // Divergent entries trigger a warning, a reporter call, and a conflict
+    // record. Remote version wins in every case.
     for tagged in local_entries {
-        // `entry` inserts only when the key is absent → remote wins.
-        key_map.entry(tagged.entry.key.clone()).or_insert(tagged);
+        if let Some(remote_tagged) = key_map.get(&tagged.entry.key) {
+            if remote_tagged.entry.raw != tagged.entry.raw {
+                tracing::warn!(
+                    file = %remote_path.display(),
+                    entry = ?tagged.entry.key,
+                    remote_snippet = %remote_tagged.entry.raw.chars().take(80).collect::<String>(),
+                    local_snippet  = %tagged.entry.raw.chars().take(80).collect::<String>(),
+                    "prefix mismatch: common entry has divergent content; \
+                     remote version wins (§5.4)"
+                );
+                reporter.report_prefix_mismatch(
+                    remote_path,
+                    &tagged.entry.key,
+                    &tagged.entry.raw,
+                    &remote_tagged.entry.raw,
+                );
+                conflicts.push(PrefixConflict {
+                    file: remote_path.to_owned(),
+                    entry_key: tagged.entry.key.clone(),
+                    local_raw: tagged.entry.raw.clone(),
+                    remote_raw: remote_tagged.entry.raw.clone(),
+                });
+                // Remote version is already in key_map — skip the local entry.
+            }
+            // Identical content: remote version already in map; nothing to do.
+        } else {
+            // Local-only entry: add it to the union.
+            key_map.insert(tagged.entry.key.clone(), tagged);
+        }
     }
 
     // Collect and sort: header first, then ascending timestamp, then source,
@@ -200,7 +304,11 @@ pub fn merge_jsonl(
         out
     };
 
-    MergeOutput { content, malformed }
+    MergeOutput {
+        content,
+        malformed,
+        conflicts,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -208,6 +316,7 @@ pub fn merge_jsonl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::path::Path;
 
     fn remote_path() -> &'static Path {
@@ -217,33 +326,72 @@ mod tests {
         Path::new("local.jsonl")
     }
 
+    // ── Helper: recording reporter ─────────────────────────────────────────
+
+    /// A [`ConflictReporter`] that captures every call for inspection.
+    struct RecordingReporter {
+        calls: RefCell<Vec<(PathBuf, String, String, String)>>,
+    }
+
+    impl RecordingReporter {
+        fn new() -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.borrow().len()
+        }
+    }
+
+    impl ConflictReporter for RecordingReporter {
+        fn report_prefix_mismatch(
+            &self,
+            file: &Path,
+            entry_key: &EntryKey,
+            local_raw: &str,
+            remote_raw: &str,
+        ) {
+            self.calls.borrow_mut().push((
+                file.to_owned(),
+                format!("{entry_key:?}"),
+                local_raw.to_owned(),
+                remote_raw.to_owned(),
+            ));
+        }
+    }
+
     // ── Empty files ────────────────────────────────────────────────────────
 
     #[test]
     fn merge_two_empty_files_produces_empty_output() {
-        let out = merge_jsonl("", remote_path(), "", local_path());
+        let out = merge_jsonl("", remote_path(), "", local_path(), &NullReporter);
         assert!(out.content.is_empty());
         assert!(out.malformed.is_empty());
+        assert!(out.conflicts.is_empty());
     }
 
     #[test]
     fn merge_empty_remote_with_local_entries_returns_local_path() {
         let local = "{\"type\":\"session\"}\n{\"type\":\"message\",\"id\":\"m1\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n";
-        let out = merge_jsonl("", remote_path(), local, local_path());
+        let out = merge_jsonl("", remote_path(), local, local_path(), &NullReporter);
         let lines: Vec<&str> = out.content.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"session\""));
         assert!(out.malformed.is_empty());
+        assert!(out.conflicts.is_empty());
     }
 
     #[test]
     fn merge_remote_entries_with_empty_local_returns_remote_path() {
         let remote = "{\"type\":\"session\"}\n{\"type\":\"message\",\"id\":\"m1\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n";
-        let out = merge_jsonl(remote, remote_path(), "", local_path());
+        let out = merge_jsonl(remote, remote_path(), "", local_path(), &NullReporter);
         let lines: Vec<&str> = out.content.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"session\""));
         assert!(out.malformed.is_empty());
+        assert!(out.conflicts.is_empty());
     }
 
     // ── Header ordering ─────────────────────────────────────────────────────
@@ -255,7 +403,7 @@ mod tests {
             "{\"type\":\"message\",\"id\":\"m1\",\"timestamp\":\"2024-01-01T01:00:00Z\"}\n",
             "{\"type\":\"session\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
         );
-        let out = merge_jsonl(remote, remote_path(), "", local_path());
+        let out = merge_jsonl(remote, remote_path(), "", local_path(), &NullReporter);
         let first = out.content.lines().next().unwrap();
         assert!(first.contains("\"session\""));
     }
@@ -272,8 +420,9 @@ mod tests {
             "{\"type\":\"session\"}\n",
             "{\"type\":\"message\",\"id\":\"b\",\"timestamp\":\"2024-01-01T02:00:00Z\"}\n",
         );
-        let out = merge_jsonl(remote, remote_path(), local, local_path());
+        let out = merge_jsonl(remote, remote_path(), local, local_path(), &NullReporter);
         assert!(out.malformed.is_empty());
+        assert!(out.conflicts.is_empty());
         let content = &out.content;
         // Both entries present.
         assert!(content.contains("\"a\""));
@@ -290,7 +439,7 @@ mod tests {
             "{\"type\":\"message\",\"id\":\"x\",\"content\":\"local\",\"timestamp\":\"2024-01-01T01:00:00Z\"}";
         let remote = format!("{remote_entry}\n");
         let local = format!("{local_entry}\n");
-        let out = merge_jsonl(&remote, remote_path(), &local, local_path());
+        let out = merge_jsonl(&remote, remote_path(), &local, local_path(), &NullReporter);
         assert!(out.content.contains("remote"));
         assert!(!out.content.contains("local"));
     }
@@ -302,10 +451,12 @@ mod tests {
             "{\"type\":\"message\",\"id\":\"1\",\"timestamp\":\"2024-01-01T01:00:00Z\"}\n",
             "{\"type\":\"message\",\"id\":\"2\",\"timestamp\":\"2024-01-01T02:00:00Z\"}\n",
         );
-        let out = merge_jsonl(content, remote_path(), content, local_path());
+        let out = merge_jsonl(content, remote_path(), content, local_path(), &NullReporter);
         let merged_lines: Vec<&str> = out.content.lines().collect();
         let original_lines: Vec<&str> = content.lines().collect();
         assert_eq!(merged_lines.len(), original_lines.len());
+        // Idempotent merge of identical content produces no conflicts.
+        assert!(out.conflicts.is_empty());
     }
 
     // ── Timestamp ordering ──────────────────────────────────────────────────
@@ -320,7 +471,7 @@ mod tests {
             "{\"type\":\"session\"}\n",
             "{\"type\":\"message\",\"id\":\"early\",\"timestamp\":\"2024-01-01T01:00:00Z\"}\n",
         );
-        let out = merge_jsonl(remote, remote_path(), local, local_path());
+        let out = merge_jsonl(remote, remote_path(), local, local_path(), &NullReporter);
         let lines: Vec<&str> = out.content.lines().collect();
         // Line 0: header, Line 1: early, Line 2: late.
         assert!(lines[0].contains("\"session\""));
@@ -338,7 +489,7 @@ mod tests {
             "{\"type\":\"session\"}\n",
             "{\"type\":\"message\",\"id\":\"has_ts\",\"timestamp\":\"2024-01-01T01:00:00Z\"}\n",
         );
-        let out = merge_jsonl(remote, remote_path(), local, local_path());
+        let out = merge_jsonl(remote, remote_path(), local, local_path(), &NullReporter);
         let lines: Vec<&str> = out.content.lines().collect();
         assert!(lines[0].contains("\"session\""));
         assert!(lines[1].contains("\"has_ts\""));
@@ -358,7 +509,7 @@ mod tests {
             "{{\"type\":\"session\"}}\n\
              {{\"type\":\"message\",\"id\":\"l\",\"timestamp\":\"{ts}\"}}\n"
         );
-        let out = merge_jsonl(&remote, remote_path(), &local, local_path());
+        let out = merge_jsonl(&remote, remote_path(), &local, local_path(), &NullReporter);
         let lines: Vec<&str> = out.content.lines().collect();
         assert!(lines[0].contains("\"session\""));
         // Remote entry "r" must come before local entry "l".
@@ -379,7 +530,7 @@ mod tests {
             "NOT VALID JSON\n",
             "{\"type\":\"message\",\"id\":\"ok\",\"timestamp\":\"2024-01-01T01:00:00Z\"}\n",
         );
-        let out = merge_jsonl(content, remote_path(), "", local_path());
+        let out = merge_jsonl(content, remote_path(), "", local_path(), &NullReporter);
         assert_eq!(out.malformed.len(), 1);
         assert_eq!(out.malformed[0].line_number, 2);
         assert_eq!(out.malformed[0].snippet, "NOT VALID JSON");
@@ -391,7 +542,7 @@ mod tests {
     #[test]
     fn malformed_line_recorded_with_correct_path_and_snippet() {
         let bad_content = "{bad json here}\n";
-        let out = merge_jsonl(bad_content, remote_path(), "", local_path());
+        let out = merge_jsonl(bad_content, remote_path(), "", local_path(), &NullReporter);
         assert_eq!(out.malformed.len(), 1);
         assert_eq!(out.malformed[0].path, remote_path());
         assert_eq!(out.malformed[0].line_number, 1);
@@ -401,14 +552,14 @@ mod tests {
     #[test]
     fn long_malformed_line_snippet_truncated_to_80_chars() {
         let long_bad: String = "x".repeat(200);
-        let out = merge_jsonl(&long_bad, remote_path(), "", local_path());
+        let out = merge_jsonl(&long_bad, remote_path(), "", local_path(), &NullReporter);
         assert_eq!(out.malformed[0].snippet.len(), 80);
     }
 
     #[test]
     fn multiple_malformed_lines_all_recorded() {
         let content = "bad1\nbad2\nbad3\n";
-        let out = merge_jsonl(content, remote_path(), "", local_path());
+        let out = merge_jsonl(content, remote_path(), "", local_path(), &NullReporter);
         assert_eq!(out.malformed.len(), 3);
     }
 
@@ -417,13 +568,13 @@ mod tests {
     #[test]
     fn non_empty_output_ends_with_trailing_newline() {
         let content = "{\"type\":\"session\"}\n";
-        let out = merge_jsonl(content, remote_path(), "", local_path());
+        let out = merge_jsonl(content, remote_path(), "", local_path(), &NullReporter);
         assert!(out.content.ends_with('\n'));
     }
 
     #[test]
     fn empty_output_has_no_trailing_newline() {
-        let out = merge_jsonl("", remote_path(), "", local_path());
+        let out = merge_jsonl("", remote_path(), "", local_path(), &NullReporter);
         assert!(out.content.is_empty());
     }
 
@@ -443,11 +594,12 @@ mod tests {
             "{\"type\":\"message\",\"id\":\"2\",\"timestamp\":\"2024-01-01T02:00:00Z\"}\n",
             "{\"type\":\"message\",\"id\":\"3\",\"timestamp\":\"2024-01-01T03:00:00Z\"}\n",
         );
-        let out = merge_jsonl(remote, remote_path(), local, local_path());
+        let out = merge_jsonl(remote, remote_path(), local, local_path(), &NullReporter);
         let lines: Vec<&str> = out.content.lines().collect();
         // All 4 unique entries (header + 3) should be present.
         assert_eq!(lines.len(), 4);
         assert!(out.malformed.is_empty());
+        assert!(out.conflicts.is_empty());
     }
 
     #[test]
@@ -463,8 +615,10 @@ mod tests {
             "{\"type\":\"message\",\"id\":\"common\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
             "{\"type\":\"message\",\"id\":\"from_local\",\"timestamp\":\"2024-01-01T03:00:00Z\"}\n",
         );
-        let out = merge_jsonl(remote, remote_path(), local, local_path());
+        let out = merge_jsonl(remote, remote_path(), local, local_path(), &NullReporter);
         assert!(out.malformed.is_empty());
+        // "common" is identical in both → no conflict.
+        assert!(out.conflicts.is_empty());
         assert!(out.content.contains("\"common\""));
         assert!(out.content.contains("\"from_remote\""));
         assert!(out.content.contains("\"from_local\""));
@@ -476,7 +630,7 @@ mod tests {
     fn session_header_appears_exactly_once_when_present_in_both() {
         let remote = "{\"type\":\"session\",\"id\":\"s\"}\n";
         let local = "{\"type\":\"session\",\"id\":\"s\"}\n";
-        let out = merge_jsonl(remote, remote_path(), local, local_path());
+        let out = merge_jsonl(remote, remote_path(), local, local_path(), &NullReporter);
         assert_eq!(out.content.matches("\"session\"").count(), 1);
     }
 
@@ -486,7 +640,148 @@ mod tests {
     fn content_without_trailing_newline_in_input_still_valid() {
         // Input lacks trailing newline — output should still be valid JSONL.
         let content = "{\"type\":\"session\"}";
-        let out = merge_jsonl(content, remote_path(), "", local_path());
+        let out = merge_jsonl(content, remote_path(), "", local_path(), &NullReporter);
         assert!(out.content.ends_with('\n'));
+    }
+
+    // ── Prefix verification (US-007 / §5.4) ─────────────────────────────────
+
+    #[test]
+    fn identical_common_entries_produce_no_conflict() {
+        // Both sides have the same entry with identical content.
+        let content = concat!(
+            "{\"type\":\"session\"}\n",
+            "{\"type\":\"message\",\"id\":\"x\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
+        );
+        let reporter = RecordingReporter::new();
+        let out = merge_jsonl(content, remote_path(), content, local_path(), &reporter);
+        assert_eq!(
+            reporter.call_count(),
+            0,
+            "no conflict reporter calls expected"
+        );
+        assert!(out.conflicts.is_empty());
+        // Content still present.
+        assert!(out.content.contains("\"x\""));
+    }
+
+    #[test]
+    fn divergent_common_entry_triggers_conflict_and_uses_remote() {
+        let remote_entry = "{\"type\":\"message\",\"id\":\"y\",\"extra\":\"remote_data\",\"timestamp\":\"2024-01-01T00:00:00Z\"}";
+        let local_entry =
+            "{\"type\":\"message\",\"id\":\"y\",\"extra\":\"local_data\",\"timestamp\":\"2024-01-01T00:00:00Z\"}";
+        let remote = format!("{remote_entry}\n");
+        let local = format!("{local_entry}\n");
+
+        let reporter = RecordingReporter::new();
+        let out = merge_jsonl(&remote, remote_path(), &local, local_path(), &reporter);
+
+        // Conflict detected and reporter called.
+        assert_eq!(reporter.call_count(), 1);
+        assert_eq!(out.conflicts.len(), 1);
+
+        let conflict = &out.conflicts[0];
+        assert_eq!(conflict.file, remote_path());
+        assert!(conflict.local_raw.contains("local_data"));
+        assert!(conflict.remote_raw.contains("remote_data"));
+
+        // Remote version wins in the merged output.
+        assert!(out.content.contains("remote_data"));
+        assert!(!out.content.contains("local_data"));
+    }
+
+    #[test]
+    fn conflict_reporter_receives_correct_arguments() {
+        let remote_entry = "{\"type\":\"message\",\"id\":\"z\",\"v\":\"r\",\"timestamp\":\"2024-01-01T00:00:00Z\"}";
+        let local_entry =
+            "{\"type\":\"message\",\"id\":\"z\",\"v\":\"l\",\"timestamp\":\"2024-01-01T00:00:00Z\"}";
+        let remote = format!("{remote_entry}\n");
+        let local = format!("{local_entry}\n");
+
+        let reporter = RecordingReporter::new();
+        let _ = merge_jsonl(&remote, remote_path(), &local, local_path(), &reporter);
+
+        let calls = reporter.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        let (file, key_debug, local_raw, remote_raw) = &calls[0];
+        assert_eq!(file, remote_path());
+        // Key debug should mention the type and id.
+        assert!(key_debug.contains("message"));
+        assert!(key_debug.contains("z"));
+        // local_raw is what was passed as the local argument.
+        assert!(local_raw.contains("\"l\""));
+        // remote_raw is the committed version that wins.
+        assert!(remote_raw.contains("\"r\""));
+    }
+
+    #[test]
+    fn non_conflicting_entries_unaffected_by_prefix_verification() {
+        // "common" is byte-identical in both; "only_remote" and "only_local"
+        // are new entries that should be unaffected by verification.
+        let remote = concat!(
+            "{\"type\":\"session\"}\n",
+            "{\"type\":\"message\",\"id\":\"common\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
+            "{\"type\":\"message\",\"id\":\"only_remote\",\"timestamp\":\"2024-01-01T01:00:00Z\"}\n",
+        );
+        let local = concat!(
+            "{\"type\":\"session\"}\n",
+            "{\"type\":\"message\",\"id\":\"common\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
+            "{\"type\":\"message\",\"id\":\"only_local\",\"timestamp\":\"2024-01-01T02:00:00Z\"}\n",
+        );
+        let reporter = RecordingReporter::new();
+        let out = merge_jsonl(remote, remote_path(), local, local_path(), &reporter);
+        // No conflict: "common" is identical; the other entries are unique.
+        assert_eq!(reporter.call_count(), 0);
+        assert!(out.conflicts.is_empty());
+        assert!(out.content.contains("\"common\""));
+        assert!(out.content.contains("\"only_remote\""));
+        assert!(out.content.contains("\"only_local\""));
+    }
+
+    #[test]
+    fn multiple_conflicting_entries_all_reported() {
+        // Two entries conflict; both should be reported and remote versions win.
+        let remote = concat!(
+            "{\"type\":\"message\",\"id\":\"a\",\"v\":\"r1\",\"timestamp\":\"2024-01-01T01:00:00Z\"}\n",
+            "{\"type\":\"message\",\"id\":\"b\",\"v\":\"r2\",\"timestamp\":\"2024-01-01T02:00:00Z\"}\n",
+        );
+        let local = concat!(
+            "{\"type\":\"message\",\"id\":\"a\",\"v\":\"l1\",\"timestamp\":\"2024-01-01T01:00:00Z\"}\n",
+            "{\"type\":\"message\",\"id\":\"b\",\"v\":\"l2\",\"timestamp\":\"2024-01-01T02:00:00Z\"}\n",
+        );
+        let reporter = RecordingReporter::new();
+        let out = merge_jsonl(remote, remote_path(), local, local_path(), &reporter);
+        assert_eq!(reporter.call_count(), 2);
+        assert_eq!(out.conflicts.len(), 2);
+        // Remote values win.
+        assert!(out.content.contains("\"r1\""));
+        assert!(out.content.contains("\"r2\""));
+        assert!(!out.content.contains("\"l1\""));
+        assert!(!out.content.contains("\"l2\""));
+    }
+
+    #[test]
+    fn conflict_record_contains_file_path_and_both_raw_values() {
+        let remote_entry =
+            "{\"type\":\"message\",\"id\":\"k\",\"data\":\"from_remote\",\"timestamp\":\"2024-01-01T00:00:00Z\"}";
+        let local_entry =
+            "{\"type\":\"message\",\"id\":\"k\",\"data\":\"from_local\",\"timestamp\":\"2024-01-01T00:00:00Z\"}";
+        let remote = format!("{remote_entry}\n");
+        let local = format!("{local_entry}\n");
+
+        let out = merge_jsonl(&remote, remote_path(), &local, local_path(), &NullReporter);
+        assert_eq!(out.conflicts.len(), 1);
+
+        let c = &out.conflicts[0];
+        assert_eq!(c.file, remote_path());
+        assert!(c.local_raw.contains("from_local"));
+        assert!(c.remote_raw.contains("from_remote"));
+        assert_eq!(
+            c.entry_key,
+            EntryKey::Entry {
+                entry_type: "message".to_owned(),
+                id: "k".to_owned(),
+            }
+        );
     }
 }
