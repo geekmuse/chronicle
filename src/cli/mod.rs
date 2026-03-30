@@ -140,7 +140,7 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
         }
     };
 
-    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let remote_url = if cfg.storage.remote_url.is_empty() {
         None
     } else {
@@ -161,7 +161,7 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
     let mut total_files = 0usize;
 
     if (agent == "pi" || agent == "all") && cfg.agents.pi.enabled {
-        let source_dir = config::expand_path(&cfg.agents.pi.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         let (s, f) = import_agent_sessions(&ImportParams {
             agent_name: "pi",
             source_dir: &source_dir,
@@ -180,7 +180,7 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
     }
 
     if (agent == "claude" || agent == "all") && cfg.agents.claude.enabled {
-        let source_dir = config::expand_path(&cfg.agents.claude.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         let (s, f) = import_agent_sessions(&ImportParams {
             agent_name: "claude",
             source_dir: &source_dir,
@@ -434,7 +434,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
     let canon_level = cfg.canonicalization.level;
     let machine_name = non_empty_machine_name(&cfg.general.machine_name);
-    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let remote_url: Option<&str> = if cfg.storage.remote_url.is_empty() {
         None
     } else {
@@ -457,7 +457,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     let mut changed: Vec<ScannedChange> = Vec::new();
 
     if cfg.agents.pi.enabled {
-        let source_dir = config::expand_path(&cfg.agents.pi.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -479,7 +479,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     }
 
     if cfg.agents.claude.enabled {
-        let source_dir = config::expand_path(&cfg.agents.claude.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -669,7 +669,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     // -----------------------------------------------------------------------
     // Phase 3: Incoming — materialize repo working tree → local agent dirs.
     // -----------------------------------------------------------------------
-    let materialized = materialize_repo_to_local(&repo_path, &cfg, &registry)
+    let materialized = materialize_repo_to_local(&repo_path, &cfg, home, &registry)
         .context("failed to materialize session files")?;
 
     if !quiet {
@@ -754,7 +754,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
     let canon_level = cfg.canonicalization.level;
     let machine_name = non_empty_machine_name(&cfg.general.machine_name);
-    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let remote_url: Option<&str> = if cfg.storage.remote_url.is_empty() {
         None
     } else {
@@ -772,7 +772,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let mut changed: Vec<ScannedChange> = Vec::new();
 
     if cfg.agents.pi.enabled {
-        let source_dir = config::expand_path(&cfg.agents.pi.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -794,7 +794,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     }
 
     if cfg.agents.claude.enabled {
-        let source_dir = config::expand_path(&cfg.agents.claude.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -1120,7 +1120,7 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
 
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
     let machine_name = non_empty_machine_name(&cfg.general.machine_name);
-    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let remote_url: Option<&str> = if cfg.storage.remote_url.is_empty() {
         None
     } else {
@@ -1153,7 +1153,7 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         .context("failed to integrate remote changes")?;
 
     // Step 3: Materialize repo files to local agent session directories.
-    let materialized = materialize_repo_to_local(&repo_path, &cfg, &registry)
+    let materialized = materialize_repo_to_local(&repo_path, &cfg, home, &registry)
         .context("failed to materialize session files")?;
 
     println!(
@@ -1337,6 +1337,7 @@ impl MaterializeFilter {
 fn materialize_repo_to_local(
     repo_path: &Path,
     cfg: &config::Config,
+    home: &Path,
     registry: &TokenRegistry,
 ) -> Result<usize> {
     let filter = MaterializeFilter::from_config(cfg);
@@ -1345,7 +1346,7 @@ fn materialize_repo_to_local(
     if cfg.agents.pi.enabled {
         let pi_sessions_repo = repo_path.join("pi").join("sessions");
         if pi_sessions_repo.exists() {
-            let local_pi_dir = config::expand_path(&cfg.agents.pi.session_dir);
+            let local_pi_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
             total +=
                 materialize_agent_dir(&pi_sessions_repo, &local_pi_dir, registry, true, &filter)
                     .context("Pi session materialization failed")?;
@@ -1355,7 +1356,8 @@ fn materialize_repo_to_local(
     if cfg.agents.claude.enabled {
         let claude_projects_repo = repo_path.join("claude").join("projects");
         if claude_projects_repo.exists() {
-            let local_claude_dir = config::expand_path(&cfg.agents.claude.session_dir);
+            let local_claude_dir =
+                config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
             total += materialize_agent_dir(
                 &claude_projects_repo,
                 &local_claude_dir,
@@ -1666,7 +1668,7 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     println!("Config file   : {}", config_path.display());
 
     // --- Last sync time from manifest ---------------------------------------
-    let repo_path = expand_home(&cfg.storage.repo_path, home);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let last_sync_str = if repo_path.exists() {
         match git::RepoManager::init_or_open(&repo_path, None, &cfg.storage.branch) {
             Ok(manager) => match manager.read_manifest() {
@@ -1698,7 +1700,7 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     let mut pending_mod = 0usize;
 
     if cfg.agents.pi.enabled {
-        let source_dir = expand_home(&cfg.agents.pi.session_dir, home);
+        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -1716,7 +1718,7 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     }
 
     if cfg.agents.claude.enabled {
-        let source_dir = expand_home(&cfg.agents.claude.session_dir, home);
+        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -1768,19 +1770,6 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     );
 
     Ok(())
-}
-
-/// Expand a `~/…` path using the injected `home` directory instead of
-/// `dirs::home_dir()`.  Falls back to [`config::expand_path`] for
-/// non-tilde paths.
-fn expand_home(path: &str, home: &Path) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        home.join(rest)
-    } else if path == "~" {
-        home.to_path_buf()
-    } else {
-        PathBuf::from(path)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2971,7 +2960,7 @@ mod tests {
         let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
         let registry = TokenRegistry::from_config(&cfg.canonicalization, &home);
 
-        let count = materialize_repo_to_local(&repo_path, &cfg, &registry).unwrap();
+        let count = materialize_repo_to_local(&repo_path, &cfg, &home, &registry).unwrap();
 
         assert_eq!(count, 1, "exactly one file should be materialized");
 
