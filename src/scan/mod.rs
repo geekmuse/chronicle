@@ -88,7 +88,19 @@ impl StateCache {
     }
 
     /// XDG-compliant default path: `~/.local/share/chronicle/state.json`.
+    ///
+    /// # Deprecation
+    ///
+    /// This method is superseded by [`StateCache::path_for_repo`], which
+    /// co-locates the cache with a specific sync repository and avoids
+    /// global-path race conditions when multiple repos are in use.
     #[must_use]
+    #[deprecated(
+        since = "0.2.2",
+        note = "Use `StateCache::path_for_repo` instead; it co-locates the \
+                cache with the sync repo and prevents race conditions in \
+                concurrent multi-repo setups."
+    )]
     pub fn default_path() -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| {
@@ -333,6 +345,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn default_path_ends_with_expected_suffix() {
         let p = StateCache::default_path();
         assert!(p.ends_with("chronicle/state.json"));
