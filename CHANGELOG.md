@@ -13,6 +13,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.4.2] - 2026-03-30
+
+### Added
+- **Materialization state cache** — `MaterializeCache` (stored as `materialize-state.json`
+  alongside the repo) tracks each repo file's mtime/size at the time it was last
+  materialized. `materialize_agent_dir` now checks the cache before reading any repo
+  file; unchanged files are skipped entirely (no `fs::read_to_string`, no
+  de-canonicalization). On a typical cron run where only a handful of files changed
+  on the remote, this reduces the materialize pass from ~2.5 minutes to < 1 second.
+  Cache is invalidated automatically when the canonicalization config (`level` or
+  `home_token`) changes.
+- **Advisory file lock for sync/push** — `sync_impl` and `push_impl` now acquire an
+  exclusive non-blocking `flock` on `<repo-parent>/chronicle.lock` before starting
+  work. If the lock is already held by another Chronicle process, the new invocation
+  logs a message and exits cleanly without error, eliminating the git-index-lock
+  cascade that occurred when cron intervals overlapped.
+
+### Fixed
+- **`pull_impl` materializes unconditionally** — `pull --` (manual) called
+  `materialize_repo_to_local` even when `integrate_remote_changes` returned 0 (remote
+  already in sync). Now applies the same `remote_integrated > 0` fast-path guard that
+  `sync_impl` has, skipping the full ~1.74 GB repo read when nothing arrived from the
+  remote.
+
 ## [0.4.1] - 2026-03-30
 
 ### Fixed
@@ -136,7 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project initialized
 
-[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.4...v0.3.0

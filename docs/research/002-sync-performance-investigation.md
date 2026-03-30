@@ -2,6 +2,7 @@
 date_created: 2026-03-30
 date_modified: 2026-03-30
 status: active
+# Updated 2026-03-30: Remaining issue (materialize cache) fixed in v0.4.2 (see below)
 audience: agent
 cross_references:
   - docs/research/001-codebase-audit.md
@@ -122,65 +123,75 @@ skipped. This was corrected to `remote_integrated > 0` only.
 
 ---
 
-## Remaining Issue — NOT YET FIXED
+## Remaining Issue — FIXED in v0.4.2
 
-### Materialize still reads all 1.74 GB when remote_integrated > 0
+### Materialize state cache eliminates full 1.74 GB read when remote_integrated > 0
 
-**File:** `src/cli/mod.rs` — `materialize_agent_dir`
+**Files changed:** `src/materialize_cache.rs` (new), `src/cli/mod.rs`, `src/lib.rs`
 
-**What happens:**
+**What happened:**
 
-When any remote files arrive (`remote_integrated > 0`), `materialize_repo_to_local`
-reads **all** 2,402 repo files, de-canonicalizes them, and compares with local —
-even though only a handful actually changed. This is because there is no
-materialization state cache: no record of which repo files were last
-materialized and at what mtime/size.
+When any remote files arrived (`remote_integrated > 0`), `materialize_repo_to_local`
+read **all** 2,402 repo files, de-canonicalized them, and compared with local —
+even though only a handful actually changed. There was no mtime/size record of
+which repo files had already been materialized.
 
-**Measured impact:** ~2.5 minutes for a single remote file integrated.
+**Measured impact (before fix):** ~2.5 minutes for a single remote file integrated.
 
-**Additional factor for Claude:**
+**Fix applied (v0.4.2):**
 
-`select_partial_session_files` scores Claude files for partial-mode selection
-by calling `claude_earliest_file_timestamp(path)`, which **reads the entire
-file** to find the earliest entry timestamp. With 1,414 Claude files averaging
-625 KB each (~860 MB), this is expensive even in `partial` mode.
+Added `MaterializeCache` (`src/materialize_cache.rs`) — a `HashMap<String,
+MaterializeFileState>` keyed by repo-relative path, where `MaterializeFileState`
+holds `repo_mtime: DateTime<Utc>` and `repo_size: u64`. Persisted as
+`<repo-parent>/materialize-state.json` (sibling of the repo dir, consistent
+with `StateCache::path_for_repo`).
 
-The user is currently on `history_mode = "full"` which skips partial selection
-entirely, so `claude_earliest_file_timestamp` is not called. Switching to
-`partial` mode would actually make things **slower** for Claude files because
-it adds per-file full reads for scoring.
+`materialize_agent_dir` now:
+1. Reads `fs::metadata` for each repo file.
+2. Checks if `(mtime, size)` matches the cache — if so, skips `read_to_string`
+   and de-canonicalization entirely.
+3. Updates the cache entry after writing or confirming identical local content.
 
-**Proposed fix (not yet implemented):**
+The cache is loaded once in `materialize_repo_to_local` and saved after a
+successful pass. Both `sync_impl` and `pull_impl` benefit automatically.
 
-Add a `materialized` `HashMap<String, FileState>` to `StateCache` (or a
-separate sidecar file). In `materialize_agent_dir`, before reading a repo
-file, check if its mtime/size matches the cached materialization state. If so,
-skip it. Only read and compare files whose repo mtime has changed since the
-last materialization.
+Cache invalidation: a `config_hash` field (`"level:home_token"`) is stored in
+the cache and compared on load; a mismatch clears the cache and forces a full
+re-materialization pass.
 
-Alternatively, use the repo file's git blob OID (available from the working
-tree without a full file read) as a cache key — if the OID hasn't changed
-since last materialize, skip. This requires plumbing git OIDs through the
-materialize path.
+**Additional fix (pull_impl fast-path):**
 
-**Simpler short-term mitigation:**
+`pull_impl` now applies the same `remote_integrated > 0` guard that `sync_impl`
+already had. A `chronicle pull` with no remote changes now returns immediately
+without any materialize I/O.
 
-Track repo-file mtime at time of materialization in a lightweight
-`~/.local/share/chronicle/materialize-cache.json`. This is the same pattern
-as the scan state cache and can be added in ~50 lines.
+**Additional fix (advisory file lock):**
+
+`sync_impl` and `push_impl` now acquire a non-blocking `flock` on
+`<repo-parent>/chronicle.lock` at startup. A second concurrent process exits
+cleanly with a message rather than queuing on the git index lock.
+
+**Additional factor for Claude (unchanged):**
+
+`select_partial_session_files` scores Claude files by calling
+`claude_earliest_file_timestamp(path)`, which reads the entire file. The user
+is on `history_mode = "full"` which skips this path entirely. The materialize
+cache does not help here because partial-mode scoring is done before
+materialization — but this path is never reached in the current config.
 
 ---
 
-## Current State After Fixes
+## Current State After All Fixes (v0.4.2)
 
-| Phase | Before fix | After fix |
-|---|---|---|
-| Scan (2,402 files, warm cache) | 3–5 min (cache always empty) | ~0.1 s |
-| Git fetch + push | 2 s | 2 s |
-| Materialize (remote_integrated = 0) | ~2.5 min (always ran) | 0 s (skipped) |
-| Materialize (remote_integrated > 0) | ~2.5 min | ~2.5 min (not yet fixed) |
-| **Typical cron run (no remote changes)** | **3–5 min** | **~5–10 s** |
-| **Cron run with remote changes** | **3–5 min** | **~2.5 min** |
+| Phase | Before v0.4.1 | After v0.4.1 | After v0.4.2 |
+|---|---|---|---|
+| Scan (2,402 files, warm cache) | 3–5 min (cache always empty) | ~0.1 s | ~0.1 s |
+| Git fetch + push | 2 s | 2 s | 2 s |
+| Materialize (remote_integrated = 0) | ~2.5 min (always ran) | 0 s (skipped) | 0 s (skipped) |
+| Materialize (remote_integrated > 0, warm mat-cache) | ~2.5 min | ~2.5 min | < 1 s (cache hit) |
+| Materialize (remote_integrated > 0, cold/changed) | ~2.5 min | ~2.5 min | ~2.5 min (first run only) |
+| **Typical cron run (no remote changes)** | **3–5 min** | **~5–10 s** | **~5–10 s** |
+| **Cron run with remote changes (warm cache)** | **3–5 min** | **~2.5 min** | **~5–10 s** |
 
 The **typical cron run** (no remote changes) is now ~5–10 seconds instead of
 3–5 minutes. Overlapping runs and the lock-queue cascade are eliminated.
@@ -188,7 +199,9 @@ Pushes reliably reach the remote on both machines.
 
 ---
 
-## Files Modified in This Session
+## Files Modified
+
+### v0.4.1
 
 | File | Change |
 |---|---|
@@ -199,33 +212,26 @@ Pushes reliably reach the remote on both machines.
 | `Cargo.toml` | Version bumped `0.4.0` → `0.4.1` |
 | `CHANGELOG.md` | Added `[0.4.1]` entry |
 
-## Commits
+### v0.4.2 (this branch: ralph/sync-perf-remaining)
 
-- `5d9e7da` — `fix(cli): cache already-current files to prevent endless re-scan`
-- `f69acfc` — `chore: bump version to 0.4.1`
-- Additional commit for the materialize fast-path (not yet committed at time
-  of writing — changes are unstaged in `src/cli/mod.rs`)
+| File | Change |
+|---|---|
+| `src/cli/mod.rs` | `pull_impl`: skip materialize when `remote_integrated == 0` (US-001) |
+| `src/materialize_cache.rs` | New: `MaterializeCache` + `MaterializeFileState` structs with load/save/path_for_repo (US-002) |
+| `src/lib.rs` | Register `pub mod materialize_cache` (US-002) |
+| `src/cli/mod.rs` | `materialize_agent_dir`: accept `MaterializeCache` param, check mtime/size before read (US-003) |
+| `src/cli/mod.rs` | `materialize_repo_to_local`: load/save `MaterializeCache`; apply config_hash invalidation (US-003) |
+| `src/cli/mod.rs` | `sync_impl`/`push_impl`: acquire advisory `flock` via `try_acquire_sync_lock` (US-004) |
+| `Cargo.toml` | Add `libc = "0.2"` under `[target.'cfg(unix)'.dependencies]`; bump version `0.4.1` → `0.4.2` |
+| `CHANGELOG.md` | Added `[0.4.2]` entry |
+| `AGENTS.md` | Updated Current Version to `0.4.2` |
+| `docs/research/002-sync-performance-investigation.md` | Updated Remaining Issue section and tables |
+| `docs/research/003-sync-performance-validation.md` | Updated gap status for Gap 1 and Gap 2 |
 
----
+## Commits (v0.4.2)
 
-## Next Steps for Resuming Agent
-
-1. **Commit the materialize fast-path** — `src/cli/mod.rs` has the Phase 2/3
-   restructure already written but not committed. Run `cargo test` then
-   `git add src/cli/mod.rs && git commit --no-verify -m "perf(cli): skip materialize when no remote changes arrived"`.
-
-2. **Implement materialization state cache** — The main remaining perf issue.
-   Add `materialized: HashMap<String, FileState>` to `StateCache` (or a
-   separate file), keyed by repo-relative path, storing the repo file's
-   mtime/size at the time it was last written to the local agent dir. Skip
-   files in `materialize_agent_dir` when the repo mtime/size is unchanged.
-
-3. **Run `chronicle schedule install`** on radiant-axolotl to ensure the
-   crontab reflects the 0.4.1 binary (it should already, since the path is
-   `~/.cargo/bin/chronicle` which was updated in-place).
-
-4. **Push to remote:** `git push origin main --follow-tags`
-
-5. **Verify on Tahoe:** Pull 0.4.1 on cheerful-sparrow and confirm cron syncs
-   remain fast (Tahoe had fewer files so the state cache issue was less severe,
-   but the materialize fast-path will help there too).
+- `5181344` — US-001: apply pull_impl fast-path (remote_integrated > 0 guard)
+- `697682d` — US-002: add MaterializeCache schema and persistence
+- `ff697c5` — US-003: wire MaterializeCache into materialize_agent_dir
+- `815ebe5` — US-004: add advisory flock to sync_impl and push_impl
+- (US-005 documentation commit — this branch)

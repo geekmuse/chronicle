@@ -2,6 +2,7 @@
 date_created: 2026-03-30
 date_modified: 2026-03-30
 status: active
+# Updated 2026-03-30: Gap 1 (pull_impl) and Gap 2 (concurrency) addressed in v0.4.2 (see below)
 audience: both
 cross_references:
   - docs/research/002-sync-performance-investigation.md
@@ -212,36 +213,32 @@ investigation but should not be cited as precise measurements.
 
 ## Breadth Assessment — Gaps and Underexplored Areas
 
-### Gap 1: `pull_impl` still materializes unconditionally
+### Gap 1: `pull_impl` materializes unconditionally — ✅ FIXED in v0.4.2 (US-001)
 
-**Severity: Medium**
+**Severity: Medium (resolved)**
 
-The investigation focuses on `sync_impl` but `pull_impl` (lines 1200–1251)
-calls `materialize_repo_to_local` unconditionally — there is no
-`remote_integrated > 0` guard. On a pull with zero integrated changes (e.g.,
-remote is already in sync), the full 1.74 GB materialize pass still runs.
+`pull_impl` now applies the same `remote_integrated > 0` guard that `sync_impl`
+had. A `chronicle pull` with no remote changes prints a skip message and returns
+`materialized = 0` without reading any files. A unit test
+(`pull_skips_materialize_when_no_remote_changes`) covers this path.
 
-This is less critical because `pull` is a manual command (not cron-driven),
-but for consistency and user experience, `pull_impl` should apply the same
-fast-path. The investigation doesn't mention this.
+**Original finding:** `pull_impl` called `materialize_repo_to_local`
+unconditionally even when `integrate_remote_changes` returned 0.
 
-### Gap 2: No concurrency protection / stale lock cascade
+### Gap 2: No concurrency protection / stale lock cascade — ✅ FIXED in v0.4.2 (US-004)
 
-**Severity: Medium (diagnostic gap)**
+**Severity: Medium (resolved)**
 
-The investigation mentions "Subsequent cron invocations queued waiting on
-the git index lock, creating a cascade" but doesn't describe what mechanism
-prevents this. There is:
+`sync_impl` and `push_impl` now acquire a non-blocking exclusive `flock` on
+`<repo-parent>/chronicle.lock` at startup. If the lock is already held, the
+new invocation prints `[sync] Another sync is in progress — skipping this run.`
+and returns `Ok(())` without error. The lock is released automatically when the
+`File` handle is dropped (RAII). Implementation is `#[cfg(unix)]`-guarded;
+non-Unix platforms always return `Ok(true)` (no-op).
 
-- No file lock / flock in `sync_impl` to prevent concurrent Chronicle
-  processes.
-- No git index lock acquisition/check before starting work.
-- No PID file or advisory lock.
-
-The fix (making sync fast enough to complete within the cron interval) is
-an implicit mitigation, but if sync ever slows down again (e.g., large
-remote materialize), the cascade will recur. The investigation should have
-noted the absence of explicit concurrency protection as a systemic risk.
+**Original finding:** No file lock, git index lock, or PID file protected
+against concurrent Chronicle processes; the lock cascade risk remained systemic
+even after making sync faster.
 
 ### Gap 3: `integrate_remote_changes` reads all remote blobs
 
@@ -376,14 +373,15 @@ used for scan. Recommendations:
 
 **Gaps identified:**
 
-| Gap | Severity | Description |
-|-----|----------|-------------|
-| `pull_impl` unconditional materialize | Medium | Not covered by the sync fast-path |
-| No concurrency protection | Medium | Lock cascade risk remains systemic |
-| `integrate_remote_changes` O(n) blob reads | Low-Medium | Scales with total files, not changes |
-| Sequential file processing | Low | No parallelism explored |
-| `merge_jsonl` allocation pressure | Low | Not profiled |
-| State cache key fragility | Low | Absolute path keys; no migration |
+| Gap | Severity | Status |
+|-----|----------|--------|
+| `pull_impl` unconditional materialize | Medium | ✅ Fixed in v0.4.2 (US-001) |
+| No concurrency protection | Medium | ✅ Fixed in v0.4.2 (US-004) |
+| Materialize reads all files on `remote_integrated > 0` | High | ✅ Fixed in v0.4.2 (US-002/003) |
+| `integrate_remote_changes` O(n) blob reads | Low-Medium | Open |
+| Sequential file processing | Low | Open |
+| `merge_jsonl` allocation pressure | Low | Open |
+| State cache key fragility | Low | Open |
 
 **Overall assessment:** The investigation is accurate, well-evidenced, and
 its fixes are sound. The two identified root causes are genuine and the
