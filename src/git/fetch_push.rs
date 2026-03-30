@@ -7,6 +7,67 @@ use std::time::Duration;
 use super::{GitError, RepoManager, PUSH_BACKOFF_SECS};
 
 // ---------------------------------------------------------------------------
+// SSH credentials helper
+// ---------------------------------------------------------------------------
+
+/// Build a [`git2::RemoteCallbacks`] that handles SSH authentication.
+///
+/// Strategy (tried in order):
+/// 1. SSH agent — works when `ssh-agent` is running and has the key loaded,
+///    which is the normal case on macOS (Keychain) and Linux (ssh-agent).
+/// 2. Default key files — `~/.ssh/id_ed25519`, `~/.ssh/id_ecdsa`,
+///    `~/.ssh/id_rsa` (tried in order, first existing file wins).
+///
+/// libgit2 does NOT read `~/.ssh/config` or use the system SSH binary, so
+/// this callback is required for any SSH remote URL.
+///
+/// The `called` flag prevents the infinite-retry loop that libgit2 triggers
+/// when credentials are accepted by the callback but rejected by the server —
+/// returning an error on the second invocation surfaces the real failure.
+fn make_auth_callbacks<'cb>() -> git2::RemoteCallbacks<'cb> {
+    let mut callbacks = git2::RemoteCallbacks::new();
+    let mut called = false;
+
+    callbacks.credentials(move |_url, username_from_url, allowed_types| {
+        if called {
+            return Err(git2::Error::from_str(
+                "SSH authentication failed (credentials rejected by server)",
+            ));
+        }
+        called = true;
+
+        let username = username_from_url.unwrap_or("git");
+
+        if allowed_types.contains(git2::CredentialType::SSH_KEY) {
+            // 1. Try SSH agent first.
+            if let Ok(cred) = git2::Cred::ssh_key_from_agent(username) {
+                return Ok(cred);
+            }
+
+            // 2. Fall back to well-known key files.
+            if let Some(home) = dirs::home_dir() {
+                let ssh_dir = home.join(".ssh");
+                for key_name in &["id_ed25519", "id_ecdsa", "id_rsa"] {
+                    let private_key = ssh_dir.join(key_name);
+                    if private_key.exists() {
+                        let public_key = ssh_dir.join(format!("{}.pub", key_name));
+                        let pub_opt = public_key.exists().then_some(public_key.as_path());
+                        return git2::Cred::ssh_key(username, pub_opt, &private_key, None);
+                    }
+                }
+            }
+        }
+
+        Err(git2::Error::from_str(
+            "no SSH credentials available: ensure ssh-agent is running or \
+             a key exists at ~/.ssh/id_ed25519, ~/.ssh/id_ecdsa, or ~/.ssh/id_rsa",
+        ))
+    });
+
+    callbacks
+}
+
+// ---------------------------------------------------------------------------
 // Network-error classification
 // ---------------------------------------------------------------------------
 
@@ -46,6 +107,7 @@ impl RepoManager {
         let mut remote = self.repo.find_remote(remote_name)?;
         let refspec = format!("+refs/heads/*:refs/remotes/{}/*", remote_name);
         let mut opts = git2::FetchOptions::new();
+        opts.remote_callbacks(make_auth_callbacks());
         remote.fetch(&[refspec.as_str()], Some(&mut opts), None)?;
         Ok(())
     }
@@ -72,7 +134,7 @@ impl RepoManager {
         let mut rejection: Option<(String, String)> = None;
         {
             let rej = &mut rejection;
-            let mut callbacks = git2::RemoteCallbacks::new();
+            let mut callbacks = make_auth_callbacks();
             callbacks.push_update_reference(move |refname, status| {
                 if let Some(msg) = status {
                     *rej = Some((refname.to_owned(), msg.to_owned()));
