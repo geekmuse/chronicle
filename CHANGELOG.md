@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.2.2] - 2026-03-29
+
+### Fixed
+- SSH credentials for remote Git operations — libgit2 requires an explicit
+  credentials callback; tries SSH agent, then key files (`~/.ssh/id_ed25519`,
+  `~/.ssh/id_ecdsa`, `~/.ssh/id_rsa`), then system git credential helper for
+  HTTPS remotes
+- Default branch enforcement — `git init` now always creates the configured
+  branch (default: `main`) via `RepositoryInitOptions::initial_head`,
+  overriding the system `init.defaultBranch` setting; push and pull use the
+  configured branch explicitly rather than reading HEAD
+- Integration test parallelism race — state cache path is now derived from
+  `storage.repo_path` instead of a global XDG path, isolating each test
+
 ## [0.2.1] - 2026-03-29
 
 ### Fixed
@@ -54,7 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project initialized
 
-[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/YOUR_USERNAME/chronicle/releases/tag/v0.1.0
