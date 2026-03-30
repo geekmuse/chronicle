@@ -140,7 +140,7 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
         }
     };
 
-    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let remote_url = if cfg.storage.remote_url.is_empty() {
         None
     } else {
@@ -161,7 +161,7 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
     let mut total_files = 0usize;
 
     if (agent == "pi" || agent == "all") && cfg.agents.pi.enabled {
-        let source_dir = config::expand_path(&cfg.agents.pi.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         let (s, f) = import_agent_sessions(&ImportParams {
             agent_name: "pi",
             source_dir: &source_dir,
@@ -180,7 +180,7 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
     }
 
     if (agent == "claude" || agent == "all") && cfg.agents.claude.enabled {
-        let source_dir = config::expand_path(&cfg.agents.claude.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         let (s, f) = import_agent_sessions(&ImportParams {
             agent_name: "claude",
             source_dir: &source_dir,
@@ -434,7 +434,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
     let canon_level = cfg.canonicalization.level;
     let machine_name = non_empty_machine_name(&cfg.general.machine_name);
-    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let remote_url: Option<&str> = if cfg.storage.remote_url.is_empty() {
         None
     } else {
@@ -457,7 +457,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     let mut changed: Vec<ScannedChange> = Vec::new();
 
     if cfg.agents.pi.enabled {
-        let source_dir = config::expand_path(&cfg.agents.pi.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -479,7 +479,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     }
 
     if cfg.agents.claude.enabled {
-        let source_dir = config::expand_path(&cfg.agents.claude.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -618,8 +618,9 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     //          Skipped when no remote URL is configured.
     // -----------------------------------------------------------------------
     if remote_url.is_some() {
-        let ring_buf =
-            errors::ring_buffer::RingBuffer::new(errors::ring_buffer::RingBuffer::default_path());
+        let ring_buf = errors::ring_buffer::RingBuffer::new(
+            errors::ring_buffer::RingBuffer::path_for_repo(&repo_path),
+        );
 
         match manager.fetch("origin") {
             Ok(()) => {}
@@ -668,7 +669,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     // -----------------------------------------------------------------------
     // Phase 3: Incoming — materialize repo working tree → local agent dirs.
     // -----------------------------------------------------------------------
-    let materialized = materialize_repo_to_local(&repo_path, &cfg, &registry)
+    let materialized = materialize_repo_to_local(&repo_path, &cfg, home, &registry)
         .context("failed to materialize session files")?;
 
     if !quiet {
@@ -753,7 +754,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
     let canon_level = cfg.canonicalization.level;
     let machine_name = non_empty_machine_name(&cfg.general.machine_name);
-    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let remote_url: Option<&str> = if cfg.storage.remote_url.is_empty() {
         None
     } else {
@@ -771,7 +772,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let mut changed: Vec<ScannedChange> = Vec::new();
 
     if cfg.agents.pi.enabled {
-        let source_dir = config::expand_path(&cfg.agents.pi.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -793,7 +794,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     }
 
     if cfg.agents.claude.enabled {
-        let source_dir = config::expand_path(&cfg.agents.claude.session_dir);
+        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -881,11 +882,26 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         return Ok(());
     }
 
+    let now = Utc::now();
+
+    // Prepare updated manifest (upsert last_sync for this machine).
+    let updated_manifest = build_updated_manifest(&manager, &machine_name, now)
+        .context("failed to build updated manifest")?;
+
     // Stage all changed files.
     let staged_refs: Vec<&Path> = all_staged.iter().map(|p| p.as_path()).collect();
     manager
         .stage_files(&staged_refs)
         .context("failed to stage files for push")?;
+
+    // Write and stage manifest.json alongside the session changes.
+    manager
+        .write_manifest(&updated_manifest)
+        .context("failed to write manifest")?;
+    let manifest_rel = PathBuf::from(".chronicle/manifest.json");
+    manager
+        .stage_files(&[manifest_rel.as_path()])
+        .context("failed to stage manifest")?;
 
     // Create sync commit.
     let summary = git::SyncSummary {
@@ -894,16 +910,26 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         pi_total,
         claude_total,
     };
-    let now = Utc::now();
     let msg = git::format_sync_message(&machine_name, &now, &summary);
     manager
         .commit_if_staged(&msg, &machine_name)
         .context("failed to commit staged files")?;
 
     // Push with retry (§6.5).  On exhaustion, log to ring buffer and fail.
-    let ring_buf =
-        errors::ring_buffer::RingBuffer::new(errors::ring_buffer::RingBuffer::default_path());
-    match manager.push_with_retry("origin", || Ok(()), std::thread::sleep) {
+    // on_rejection performs fetch + integrate so retries can resolve divergence.
+    let ring_buf = errors::ring_buffer::RingBuffer::new(
+        errors::ring_buffer::RingBuffer::path_for_repo(&repo_path),
+    );
+    match manager.push_with_retry(
+        "origin",
+        || {
+            manager.fetch("origin")?;
+            integrate_remote_changes(&manager, &machine_name)
+                .map(|_| ())
+                .map_err(|e| git::GitError::Manifest(e.to_string()))
+        },
+        std::thread::sleep,
+    ) {
         Ok(()) => {
             println!(
                 "Pushed {} file(s) ({} new, {} modified) to remote.",
@@ -1118,7 +1144,7 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
 
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
     let machine_name = non_empty_machine_name(&cfg.general.machine_name);
-    let repo_path = config::expand_path(&cfg.storage.repo_path);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let remote_url: Option<&str> = if cfg.storage.remote_url.is_empty() {
         None
     } else {
@@ -1129,8 +1155,9 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         .context("failed to open git repository")?;
 
     // Step 1: Fetch from remote.
-    let ring_buf =
-        errors::ring_buffer::RingBuffer::new(errors::ring_buffer::RingBuffer::default_path());
+    let ring_buf = errors::ring_buffer::RingBuffer::new(
+        errors::ring_buffer::RingBuffer::path_for_repo(&repo_path),
+    );
     match manager.fetch("origin") {
         Ok(()) => {}
         Err(ref e) if git::is_network_error(e) => {
@@ -1150,7 +1177,7 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         .context("failed to integrate remote changes")?;
 
     // Step 3: Materialize repo files to local agent session directories.
-    let materialized = materialize_repo_to_local(&repo_path, &cfg, &registry)
+    let materialized = materialize_repo_to_local(&repo_path, &cfg, home, &registry)
         .context("failed to materialize session files")?;
 
     println!(
@@ -1334,6 +1361,7 @@ impl MaterializeFilter {
 fn materialize_repo_to_local(
     repo_path: &Path,
     cfg: &config::Config,
+    home: &Path,
     registry: &TokenRegistry,
 ) -> Result<usize> {
     let filter = MaterializeFilter::from_config(cfg);
@@ -1342,7 +1370,7 @@ fn materialize_repo_to_local(
     if cfg.agents.pi.enabled {
         let pi_sessions_repo = repo_path.join("pi").join("sessions");
         if pi_sessions_repo.exists() {
-            let local_pi_dir = config::expand_path(&cfg.agents.pi.session_dir);
+            let local_pi_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
             total +=
                 materialize_agent_dir(&pi_sessions_repo, &local_pi_dir, registry, true, &filter)
                     .context("Pi session materialization failed")?;
@@ -1352,7 +1380,8 @@ fn materialize_repo_to_local(
     if cfg.agents.claude.enabled {
         let claude_projects_repo = repo_path.join("claude").join("projects");
         if claude_projects_repo.exists() {
-            let local_claude_dir = config::expand_path(&cfg.agents.claude.session_dir);
+            let local_claude_dir =
+                config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
             total += materialize_agent_dir(
                 &claude_projects_repo,
                 &local_claude_dir,
@@ -1663,9 +1692,9 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     println!("Config file   : {}", config_path.display());
 
     // --- Last sync time from manifest ---------------------------------------
-    let repo_path = expand_home(&cfg.storage.repo_path, home);
+    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
     let last_sync_str = if repo_path.exists() {
-        match git::RepoManager::init_or_open(&repo_path, None, "main") {
+        match git::RepoManager::init_or_open(&repo_path, None, &cfg.storage.branch) {
             Ok(manager) => match manager.read_manifest() {
                 Ok(manifest) => {
                     if let Some(entry) = manifest.machines.get(&cfg.general.machine_name) {
@@ -1695,7 +1724,7 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     let mut pending_mod = 0usize;
 
     if cfg.agents.pi.enabled {
-        let source_dir = expand_home(&cfg.agents.pi.session_dir, home);
+        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -1713,7 +1742,7 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     }
 
     if cfg.agents.claude.enabled {
-        let source_dir = expand_home(&cfg.agents.claude.session_dir, home);
+        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         if source_dir.exists() {
             match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
                 Ok(entries) => {
@@ -1765,19 +1794,6 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     );
 
     Ok(())
-}
-
-/// Expand a `~/…` path using the injected `home` directory instead of
-/// `dirs::home_dir()`.  Falls back to [`config::expand_path`] for
-/// non-tilde paths.
-fn expand_home(path: &str, home: &Path) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        home.join(rest)
-    } else if path == "~" {
-        home.to_path_buf()
-    } else {
-        PathBuf::from(path)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1952,9 +1968,15 @@ fn set_config_value(cfg: &mut config::Config, key: &str, value: &str) -> Result<
         // [canonicalization]
         "canonicalization.home_token" => cfg.canonicalization.home_token = value.to_owned(),
         "canonicalization.level" => {
-            cfg.canonicalization.level = value
+            let level = value
                 .parse::<u8>()
                 .map_err(|_| anyhow::anyhow!("expected a number 1–3, got: {value}"))?;
+            if !(1..=3).contains(&level) {
+                return Err(anyhow::anyhow!(
+                    "canonicalization.level must be 1, 2, or 3, got: {value}"
+                ));
+            }
+            cfg.canonicalization.level = level;
         }
         // [agents.pi]
         "agents.pi.enabled" => {
@@ -2906,6 +2928,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn push_updates_manifest_last_sync() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let repo_path = dir.path().join("repo");
+        let remote_path = dir.path().join("remote");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let claude_sessions = dir.path().join("claude_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        git2::Repository::init_bare(&remote_path).unwrap();
+
+        let session_dir = pi_sessions.join(pi_session_dir_name(&home));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("s.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"1\"}\n",
+        )
+        .unwrap();
+
+        write_push_config(
+            &config_path,
+            &repo_path,
+            &remote_path,
+            &pi_sessions,
+            &claude_sessions,
+            "test-machine",
+        );
+
+        push_impl(false, &config_path, &home).unwrap();
+
+        // After a successful push, manifest.json must exist and last_sync must be set.
+        let manifest_path = repo_path.join(".chronicle").join("manifest.json");
+        assert!(
+            manifest_path.exists(),
+            "manifest.json must be written to repo after push"
+        );
+        let content = std::fs::read_to_string(&manifest_path).unwrap();
+        let manifest: git::Manifest = serde_json::from_str(&content).unwrap();
+        let entry = manifest.machines.get("test-machine");
+        assert!(
+            entry.is_some(),
+            "machine entry must exist in manifest after push"
+        );
+        assert!(
+            entry.unwrap().last_sync.is_some(),
+            "last_sync must be set for 'test-machine' after push"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Pull tests
     // -----------------------------------------------------------------------
@@ -2977,7 +3051,7 @@ mod tests {
         let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
         let registry = TokenRegistry::from_config(&cfg.canonicalization, &home);
 
-        let count = materialize_repo_to_local(&repo_path, &cfg, &registry).unwrap();
+        let count = materialize_repo_to_local(&repo_path, &cfg, &home, &registry).unwrap();
 
         assert_eq!(count, 1, "exactly one file should be materialized");
 
@@ -3579,16 +3653,33 @@ mod tests {
     // US-018: status, errors, config
     // -----------------------------------------------------------------------
 
-    /// Write a minimal config for status/config tests.
+    /// Write a minimal config for status/config tests (defaults to branch = "main").
     fn write_status_config(
         config_path: &std::path::Path,
         repo_path: &std::path::Path,
         pi_session_dir: &std::path::Path,
         machine_name: &str,
     ) {
+        write_status_config_with_branch(
+            config_path,
+            repo_path,
+            pi_session_dir,
+            machine_name,
+            "main",
+        );
+    }
+
+    /// Write a minimal config for status/config tests with an explicit branch name.
+    fn write_status_config_with_branch(
+        config_path: &std::path::Path,
+        repo_path: &std::path::Path,
+        pi_session_dir: &std::path::Path,
+        machine_name: &str,
+        branch: &str,
+    ) {
         let toml = format!(
             "[general]\nmachine_name = \"{machine_name}\"\n\n\
-             [storage]\nrepo_path = \"{}\"\n\n\
+             [storage]\nrepo_path = \"{}\"\nbranch = \"{branch}\"\n\n\
              [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
              [agents.claude]\nenabled = false\n",
             repo_path.display(),
@@ -3671,6 +3762,36 @@ mod tests {
         write_status_config(&config_path, &repo_path, &pi_sessions, "sync-machine");
 
         // Should succeed; manifest entry should produce a formatted timestamp.
+        status_impl(&config_path, &home).unwrap();
+    }
+
+    #[test]
+    fn status_uses_configured_branch_not_main() {
+        // Regression test for H-1: status_impl must use cfg.storage.branch,
+        // not the hardcoded "main" literal.
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        // Init the repository on "chronicle" branch (not "main").
+        git::RepoManager::init_or_open(&repo_path, None, "chronicle")
+            .unwrap()
+            .ensure_working_tree()
+            .unwrap();
+
+        // Write config pointing at the same non-main branch.
+        write_status_config_with_branch(
+            &config_path,
+            &repo_path,
+            &pi_sessions,
+            "branch-machine",
+            "chronicle",
+        );
+
+        // status_impl must succeed; if it still hardcodes "main" it would
+        // either fail or produce wrong output on a repo with branch "chronicle".
         status_impl(&config_path, &home).unwrap();
     }
 
@@ -3845,6 +3966,79 @@ mod tests {
         assert_eq!(
             cfg.sync.history_mode,
             crate::config::schema::HistoryMode::Full
+        );
+    }
+
+    // --- canonicalization.level range validation ----------------------------
+
+    /// Helper: run config set canonicalization.level = <value>.
+    fn set_canon_level(config_path: &std::path::Path, value: &str) -> Result<()> {
+        config_impl(
+            Some("canonicalization.level".to_owned()),
+            Some(value.to_owned()),
+            config_path,
+        )
+    }
+
+    #[test]
+    fn config_set_level_0_rejected() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        assert!(
+            set_canon_level(&config_path, "0").is_err(),
+            "level 0 should be rejected"
+        );
+    }
+
+    #[test]
+    fn config_set_level_1_accepted() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        set_canon_level(&config_path, "1").expect("level 1 should be valid");
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.canonicalization.level, 1);
+    }
+
+    #[test]
+    fn config_set_level_2_accepted() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        set_canon_level(&config_path, "2").expect("level 2 should be valid");
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.canonicalization.level, 2);
+    }
+
+    #[test]
+    fn config_set_level_3_accepted() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        set_canon_level(&config_path, "3").expect("level 3 should be valid");
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.canonicalization.level, 3);
+    }
+
+    #[test]
+    fn config_set_level_4_rejected() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        assert!(
+            set_canon_level(&config_path, "4").is_err(),
+            "level 4 should be rejected"
         );
     }
 }

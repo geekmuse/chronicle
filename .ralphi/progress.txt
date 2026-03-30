@@ -1,0 +1,86 @@
+## Codebase Patterns
+- RingBuffer path isolation: use `RingBuffer::path_for_repo(&repo_path)` in all _impl functions, NOT `RingBuffer::default_path()`. Mirrors the StateCache pattern.
+- Temp filename uniqueness: use `as_nanos()` (full nanoseconds since epoch, u128) not `subsec_nanos()` (only the sub-second part, u32). Ring buffer already used this pattern; StateCache was the outlier.
+- `git add -A` in this repo picks up untracked files outside src/ — prefer `git add src/ tests/ .ralphi/` or check `git status` before committing with `--no-edit`.
+
+- Serde validation pattern: use `#[serde(default = "fn", deserialize_with = "fn")]` on a field to combine default-on-missing with a custom range/value validator at parse time. The default function bypasses the deserialize_with path (only used when field is absent), so the default value must itself be valid.
+- CLI set_config_value pattern: always add explicit range/enum guards after `.parse::<T>()` for fields that have constrained valid sets.
+- Tests for constrained config fields: add boundary tests in both `config/schema.rs` mod tests (TOML parse path) and `cli/mod.rs` mod tests (CLI set path).
+---
+
+---
+
+## 2026-03-29 - US-002
+Session: iter-4d7e9efb / loop-870a21db / iteration 2
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Fixed `status_impl` to use `cfg.storage.branch` instead of hardcoded `"main"` literal
+- Added `RingBuffer::path_for_repo(repo_path)` to `src/errors/ring_buffer.rs` (mirrors `StateCache::path_for_repo`)
+- Updated `sync_impl` (line ~622), `push_impl` (line ~905), `pull_impl` (line ~1133) to use `RingBuffer::path_for_repo(&repo_path)` instead of `RingBuffer::default_path()`
+- Fixed `StateCache::save` temp filename to use `as_nanos()` (u128, full epoch) instead of `subsec_nanos()` (u32, wraps every second)
+- Added `write_status_config_with_branch` test helper and `status_uses_configured_branch_not_main` regression test
+- Amended commit to remove stray `ssh.zip` (added to `.gitignore`); `docs/research/001-codebase-audit.md` was legitimately untracked and kept
+- Files changed: `src/cli/mod.rs`, `src/errors/ring_buffer.rs`, `src/scan/mod.rs`, `.gitignore`
+- Committed: `feat(cli): US-002 - Fix status_impl hardcoded branch, ring buffer global path, and temp filename collision` (93d33ad)
+- **Learnings for future iterations:**
+  - `git add -A` picks up ALL untracked files including non-code files; use targeted `git add` or check `git status` first
+  - `cargo fmt` applies changes in-place; the subsequent `cargo fmt --check` may show stale output if run from the same shell pipeline — run it as a separate command
+  - `as_nanos()` returns `u128` (full nanos since epoch); the `{nanos}` format spec works fine with `u128` in format strings
+
+## 2026-03-29 - US-003
+Session: iter-39b82cad / loop-870a21db / iteration 3
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Added lossiness warning to `Agent::decode_dir` trait doc explaining ClaudeAgent is lossy (both '/' and '.' encode to '-')
+- Expanded `ClaudeAgent::decode_dir` inline comment with a ⚠ LOSSY DECODE block explaining the double-slash artifact
+- Added `tracing::warn!` in `ClaudeAgent::decode_dir` when decoded path contains '//' to surface lossiness at runtime
+- Added test `claude_decode_lossy_dot_path_produces_double_slash` verifying dot-containing paths produce '//' in decoded output
+- Updated SSH key fallback error message in `make_auth_callbacks` to mention passphrase-protected keys require ssh-agent
+- Files changed: `src/agents/mod.rs`, `src/git/fetch_push.rs`
+- Committed: `feat(agents): US-003 - Document Claude decode_dir lossiness and improve SSH auth error message` (165b12f)
+- **Learnings for future iterations:**
+  - `tracing::warn!` with structured fields compiles fine in modules that don't already import tracing — no explicit `use tracing` needed (macro resolves via full path)
+  - The `//` double-slash artefact is the canonical signal for Claude decode_dir lossiness; future callers should check `path.to_string_lossy().contains("//")` to detect ambiguous decodes
+
+## 2026-03-29 - US-004
+Session: iter-4e42ce01 / loop-870a21db / iteration 4
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Removed all 16 `#![allow(dead_code)]` blanket attributes from every source module
+- No targeted `#[allow(dead_code)]` replacements were needed — all items are either public (Rust does not flag `pub` items in `pub` modules as dead code in a library crate) or actively used
+- Files changed: src/lib.rs, src/agents/mod.rs, src/canon/fields.rs, src/canon/levels.rs, src/canon/mod.rs, src/config/machine_name.rs, src/config/mod.rs, src/config/schema.rs, src/errors/mod.rs, src/errors/ring_buffer.rs, src/git/commit.rs, src/git/fetch_push.rs, src/git/mod.rs, src/merge/entry.rs, src/merge/set_union.rs, src/scan/mod.rs
+- Committed: `refactor: US-004 - Remove #![allow(dead_code)] blankets from all modules` (622cd6c)
+- **Learnings for future iterations:**
+  - Rust dead_code lint does NOT fire for `pub` items in `pub` modules of a library crate (they're considered reachable API surface). Blanket `#![allow(dead_code)]` in lib-crate modules is almost always unnecessary for public items.
+  - When blanket allows are pre-emptive (added before code is wired), removing them once the code is wired may produce zero warnings — confirming the code is fully integrated.
+---
+
+## PRD Run Context
+PRD Branch: ralph/audit-fixes
+Started: 2026-03-30T03:07:01.884Z
+---
+
+## 2026-03-30 - US-001
+Session: iter-efc51bc9 / loop-870a21db / iteration 1
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Added `deserialize_canon_level<'de, D>` function in `src/config/schema.rs` that rejects any value outside 1–3 via `serde::de::Error::custom`
+- Updated `CanonicalizationConfig.level` serde attribute to include `deserialize_with = "deserialize_canon_level"` (combined with existing default)
+- Added range guard `!(1..=3).contains(&level)` in `set_config_value` in `src/cli/mod.rs`
+- Added 7 boundary tests in `config::schema::tests` (0, 1, 2, 3, 4, 255, default)
+- Added 5 boundary tests in `cli::tests` via `config_impl` (0, 1, 2, 3, 4)
+- Files changed: `src/config/schema.rs`, `src/cli/mod.rs`
+- Committed: `feat(config): US-001 - Validate canonicalization.level range (1-3) at config and schema level` (46625c1)
+- **Learnings for future iterations:**
+  - `#[serde(default = "...", deserialize_with = "...")]` on a single field works; `default` supplies value when field is absent, `deserialize_with` validates when field is present
+  - Pre-commit hook runs full `ralphi check` (cargo test + clippy + fmt + deny); allow ~2 min for commit
+  - `cargo deny check` exits 0 even with "unmatched license allowance" warnings — these are pre-existing and safe to ignore
+---

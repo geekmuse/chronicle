@@ -51,17 +51,33 @@ cargo install --path .
 # First-time setup — creates config, generates machine name, inits local repo
 chronicle init
 
-# Import existing session history (one-time)
+# Import existing session history (one-time, before first sync)
 chronicle import
 
-# Run a single sync cycle
+# Run a single sync cycle (fetch → merge → push)
 chronicle sync
 
-# Install cron schedule (runs every 5 minutes by default)
-chronicle schedule install
+# Push local commits to the remote without a full sync
+chronicle push
 
-# Check sync status
+# Pull and materialise the latest remote sessions locally
+chronicle pull
+
+# Check sync status (last sync time, pending files, remote branch)
 chronicle status
+
+# View recent sync errors
+chronicle errors
+
+# Show or change a config value
+chronicle config get canonicalization.level
+chronicle config set canonicalization.level 2
+chronicle config reset canonicalization.level
+
+# Install / remove / check the cron schedule
+chronicle schedule install    # runs every 5 minutes by default
+chronicle schedule uninstall
+chronicle schedule status
 ```
 
 ## Documentation

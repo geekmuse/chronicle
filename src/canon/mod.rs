@@ -1,8 +1,3 @@
-// Items in this module will be consumed by the L2/L3 canonicalizer (US-005),
-// the import command (US-014), and the sync pipeline (US-017).
-// Allow dead-code until those stories wire it in.
-#![allow(dead_code)]
-
 //! Token registry and L1 path canonicalization.
 //!
 //! # Canonicalization levels

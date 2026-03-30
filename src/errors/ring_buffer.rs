@@ -1,7 +1,3 @@
-// Items in this module are fully wired by US-015/US-017/US-018 (sync and CLI
-// commands). Allow dead-code until those stories call append() and read().
-#![allow(dead_code)]
-
 //! 30-entry error ring buffer stored as JSONL (§11.1).
 //!
 //! All mutating operations are atomic: entries are serialized to a temporary
@@ -119,6 +115,18 @@ impl RingBuffer {
             })
             .join("chronicle")
             .join("errors.jsonl")
+    }
+
+    /// Return an `errors.jsonl` path co-located with `repo_path`.
+    ///
+    /// Placing the ring buffer next to the repository keeps it isolated to that
+    /// installation and avoids races when multiple tests each use a distinct
+    /// `storage.repo_path` tempdir.
+    ///
+    /// Path: `<repo_path>/../errors.jsonl` (sibling of the repo dir).
+    #[must_use]
+    pub fn path_for_repo(repo_path: &std::path::Path) -> PathBuf {
+        repo_path.parent().unwrap_or(repo_path).join("errors.jsonl")
     }
 
     /// Append `entry` and rotate the buffer to at most [`RING_BUFFER_CAPACITY`]

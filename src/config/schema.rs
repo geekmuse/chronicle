@@ -1,7 +1,3 @@
-// Dead-code allowed: schema types are foundational for US-013 (init),
-// US-018 (config command), and all commands that load config.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -146,6 +142,20 @@ fn canon_default_level() -> u8 {
     2
 }
 
+/// Serde visitor that rejects any value outside `1..=3`.
+fn deserialize_canon_level<'de, D>(d: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let level = u8::deserialize(d)?;
+    if !(1..=3).contains(&level) {
+        return Err(serde::de::Error::custom(format!(
+            "canonicalization.level must be 1, 2, or 3, got {level}"
+        )));
+    }
+    Ok(level)
+}
+
 /// `[canonicalization]` section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalizationConfig {
@@ -154,8 +164,11 @@ pub struct CanonicalizationConfig {
     pub home_token: String,
 
     /// Canonicalization level: 1 = paths only, 2 = + whitelisted fields,
-    /// 3 = + freeform text.
-    #[serde(default = "canon_default_level")]
+    /// 3 = + freeform text.  Valid range: **1–3** (enforced at parse time).
+    #[serde(
+        default = "canon_default_level",
+        deserialize_with = "deserialize_canon_level"
+    )]
     pub level: u8,
 
     /// Custom path tokens applied **after** `{{SYNC_HOME}}` during
@@ -281,5 +294,63 @@ impl Default for SyncConfig {
             history_mode: HistoryMode::default(),
             partial_max_count: sync_default_partial_max_count(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse a full Config TOML with only the canonicalization.level field set.
+    fn parse_with_level(level: u64) -> Result<Config, toml::de::Error> {
+        let s = format!("[canonicalization]\nlevel = {level}\n");
+        toml::from_str::<Config>(&s)
+    }
+
+    #[test]
+    fn level_0_rejected_at_parse_time() {
+        assert!(
+            parse_with_level(0).is_err(),
+            "level 0 must be rejected by the deserializer"
+        );
+    }
+
+    #[test]
+    fn level_1_accepted_at_parse_time() {
+        let cfg = parse_with_level(1).expect("level 1 is valid");
+        assert_eq!(cfg.canonicalization.level, 1);
+    }
+
+    #[test]
+    fn level_2_accepted_at_parse_time() {
+        let cfg = parse_with_level(2).expect("level 2 is valid");
+        assert_eq!(cfg.canonicalization.level, 2);
+    }
+
+    #[test]
+    fn level_3_accepted_at_parse_time() {
+        let cfg = parse_with_level(3).expect("level 3 is valid");
+        assert_eq!(cfg.canonicalization.level, 3);
+    }
+
+    #[test]
+    fn level_4_rejected_at_parse_time() {
+        assert!(
+            parse_with_level(4).is_err(),
+            "level 4 must be rejected by the deserializer"
+        );
+    }
+
+    #[test]
+    fn level_255_rejected_at_parse_time() {
+        assert!(
+            parse_with_level(255).is_err(),
+            "level 255 must be rejected by the deserializer"
+        );
+    }
+
+    #[test]
+    fn default_level_is_2() {
+        assert_eq!(Config::default().canonicalization.level, 2);
     }
 }

@@ -19,3 +19,4 @@ Thumbs.db
 # ralphi / pre-commit tooling (author-local, not for contributors)
 .ralphi/
 prek.toml
+ssh.zip

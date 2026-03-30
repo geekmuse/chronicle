@@ -1,8 +1,3 @@
-// Items in this module are used by the canonicalization and CLI layers
-// (US-004, US-013, US-014). Allow dead-code on the structs/trait until those
-// stories are wired in.
-#![allow(dead_code)]
-
 //! Agent-specific directory encoding and decoding.
 //!
 //! Pi and Claude Code store their session files under directories whose names
@@ -39,6 +34,17 @@ pub trait Agent {
     fn encode_dir(&self, path: &Path) -> String;
 
     /// Decodes an agent directory name back to an absolute filesystem path.
+    ///
+    /// # Lossiness warning
+    ///
+    /// **For [`ClaudeAgent`] this function is lossy.** Claude's encoding
+    /// maps both `/` separators and `.` characters in path components to
+    /// `-`, so the decode is a best-effort inverse that cannot distinguish
+    /// the two.  Decoded paths for projects whose names contain `.` or `-`
+    /// will be incorrect (e.g. `.config` becomes `//config` after decode).
+    ///
+    /// [`PiAgent`] is fully lossless for any path whose components do not
+    /// themselves contain `-`.
     ///
     /// # Errors
     ///
@@ -138,10 +144,23 @@ impl Agent for ClaudeAgent {
                 })?;
 
         // Restore the leading `/` then convert every `-` back to a `/`.
-        // Note: dots that were encoded as `-` cannot be recovered — the
-        // decode is a best-effort inverse that is lossless only for path
-        // components that contain no `-` or `.` characters themselves.
+        //
+        // ⚠ LOSSY DECODE: Claude encodes both `/` path separators and `.`
+        // characters in component names to `-`.  On decode every `-` becomes
+        // `/`, so a component like `.config` (encoded as `--config`) produces
+        // `//config` in the output — a double-slash that is a visible
+        // indicator of the ambiguity.  Chronicle logs a warning when this
+        // happens so callers can detect the problem at runtime.
         let path_str = format!("/{}", inner.replace('-', "/"));
+        if path_str.contains("//") {
+            tracing::warn!(
+                encoded_name = name,
+                decoded = %path_str,
+                "Claude decode_dir produced '//': the original path likely \
+                 contained '.' or '-' in a component name; decoded path may \
+                 be incorrect"
+            );
+        }
         Ok(PathBuf::from(path_str))
     }
 }
@@ -281,6 +300,38 @@ mod tests {
                 "Claude round-trip failed for {path_str}"
             );
         }
+    }
+
+    // ── Claude: decode_dir lossiness ─────────────────────────────────────────
+
+    /// Decoding a Claude-encoded name that came from a path with dots (e.g.
+    /// `/Users/bradmatic/.config/foo`) produces `//` in the decoded path
+    /// because both `/` and `.` encode to `-`.  The function still returns
+    /// `Ok`, but callers must treat the result as approximate.
+    #[test]
+    fn claude_decode_lossy_dot_path_produces_double_slash() {
+        let agent = ClaudeAgent;
+        // encode_dir:  `/Users/bradmatic/.config/foo`
+        //   → trim `/`   : `Users/bradmatic/.config/foo`
+        //   → replace `/` and `.` with `-` : `Users-bradmatic--config-foo`
+        //   → prefix `-` : `-Users-bradmatic--config-foo`
+        let encoded = agent.encode_dir(Path::new("/Users/bradmatic/.config/foo"));
+        assert_eq!(encoded, "-Users-bradmatic--config-foo");
+
+        // decode_dir: strip `-` → `Users-bradmatic--config-foo`
+        //   → replace `-` with `/` → `Users/bradmatic//config/foo`
+        //   → prepend `/`          → `/Users/bradmatic//config/foo`
+        let decoded = agent.decode_dir(&encoded).unwrap();
+        assert_eq!(
+            decoded,
+            PathBuf::from("/Users/bradmatic//config/foo"),
+            "lossy decode should surface '//' to signal the ambiguity"
+        );
+        // Confirm the double-slash is present so callers can detect lossiness.
+        assert!(
+            decoded.to_string_lossy().contains("//"),
+            "decoded path must contain '//' when dot-encoded components exist"
+        );
     }
 
     // ── Claude: error cases ───────────────────────────────────────────────────

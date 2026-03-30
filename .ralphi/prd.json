@@ -1,0 +1,162 @@
+{
+  "project": "chronicle",
+  "branchName": "ralph/audit-fixes",
+  "description": "Fix all high, medium, and applicable low-severity issues identified in the v0.2.2 codebase audit (docs/research/001-codebase-audit.md). Covers bugs, doc drift, dead code cleanup, consistency improvements, and security messaging.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Validate canonicalization.level range (1–3) at config and schema level",
+      "description": "H-2 + L-8: set_config_value accepts any u8 for canonicalization.level despite the error message saying 1–3. Add range validation in both set_config_value (CLI) and at the serde deserialization level in config/schema.rs so invalid values (0, 4–255) are rejected at parse time.",
+      "acceptanceCriteria": [
+        "set_config_value rejects level=0 and level=4 with a clear error",
+        "Parsing a config.toml with level=0 or level=255 returns an error",
+        "Valid levels (1, 2, 3) continue to work",
+        "Unit tests cover all boundary cases (0, 1, 2, 3, 4)",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 1,
+      "status": "done",
+      "dependsOn": [],
+      "notes": "Audit refs: H-2 (src/cli/mod.rs:1943–1955), L-8 (src/config/schema.rs:165)",
+      "startedAt": "2026-03-30T03:07:02.170Z",
+      "updatedAt": "2026-03-30T03:15:16.501Z",
+      "completedAt": "2026-03-30T03:15:16.501Z"
+    },
+    {
+      "id": "US-002",
+      "title": "Fix status_impl hardcoded branch, ring buffer global path, and temp filename collision",
+      "description": "H-1: status_impl hardcodes 'main' instead of cfg.storage.branch. H-3: Error ring buffer uses RingBuffer::default_path() (global ~/.local/share/chronicle/errors.jsonl) instead of a repo-relative path — same race condition class fixed for the state cache. M-5: StateCache::save uses subsec_nanos() for temp filename uniqueness; should use as_nanos() like ring_buffer.rs does. Fix all three.",
+      "acceptanceCriteria": [
+        "status_impl passes cfg.storage.branch to RepoManager::init_or_open",
+        "RingBuffer gets a path_for_repo() method deriving path from storage.repo_path",
+        "sync_impl, push_impl, pull_impl use RingBuffer::path_for_repo() instead of default_path()",
+        "StateCache::save temp filename uses as_nanos() (full nanoseconds since epoch)",
+        "Existing tests pass; new tests verify status_impl with non-main branch config",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 2,
+      "status": "done",
+      "dependsOn": [
+        "US-001"
+      ],
+      "notes": "Audit refs: H-1 (src/cli/mod.rs:1668), H-3 (src/cli/mod.rs:622,905,1133), M-5 (src/scan/mod.rs:82–90)",
+      "startedAt": "2026-03-30T03:15:16.807Z",
+      "updatedAt": "2026-03-30T03:25:36.311Z",
+      "completedAt": "2026-03-30T03:25:36.311Z"
+    },
+    {
+      "id": "US-003",
+      "title": "Document Claude decode_dir lossiness and improve SSH auth error message",
+      "description": "H-4: ClaudeAgent::decode_dir is lossy for paths with dots (both '.' and '/' encode to '-'). The Agent trait doc does not mention this. Add prominent documentation to the trait and to decode_dir explaining the lossiness, and log a warning when decoded paths contain '//' artifacts. M-9: SSH key file fallback error message should mention passphrase-protected keys as a known limitation.",
+      "acceptanceCriteria": [
+        "Agent trait has doc comment noting decode_dir may be lossy for Claude",
+        "ClaudeAgent::decode_dir doc explains the dot/slash encoding ambiguity",
+        "SSH fallback error message mentions passphrase-protected keys and ssh-agent",
+        "No new test failures introduced",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 3,
+      "status": "done",
+      "dependsOn": [],
+      "notes": "Audit refs: H-4 (src/agents/mod.rs:147–156), M-9 (src/git/fetch_push.rs:56–58)",
+      "startedAt": "2026-03-30T03:25:36.546Z",
+      "updatedAt": "2026-03-30T03:35:41.882Z",
+      "completedAt": "2026-03-30T03:35:41.882Z"
+    },
+    {
+      "id": "US-004",
+      "title": "Remove #![allow(dead_code)] blankets from all modules",
+      "description": "M-7: Every source module has #![allow(dead_code)] with comments referencing user-story delivery. All 21 stories are complete. Remove the blankets, fix or #[allow] only specific genuinely unused items, and ensure the crate compiles cleanly.",
+      "acceptanceCriteria": [
+        "No #![allow(dead_code)] at module level in any source file",
+        "#[allow(dead_code)] used only on specific items that are intentionally unused public API",
+        "lib.rs crate-level #![allow(dead_code)] removed or replaced with targeted allows",
+        "cargo build produces no dead_code warnings (or only suppressed intentional ones)",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 4,
+      "status": "done",
+      "dependsOn": [
+        "US-001",
+        "US-002",
+        "US-003"
+      ],
+      "notes": "Audit ref: M-7. This touches every .rs file so should run after code changes in US-001–003 to avoid merge conflicts.",
+      "startedAt": "2026-03-30T03:35:42.243Z",
+      "updatedAt": "2026-03-30T03:50:00.000Z",
+      "completedAt": "2026-03-30T03:50:00.000Z"
+    },
+    {
+      "id": "US-005",
+      "title": "Consolidate expand_path / expand_home into a single testable function",
+      "description": "M-2: config::expand_path uses dirs::home_dir() for tilde expansion while cli::expand_home accepts an explicit home parameter. sync_impl, push_impl, and pull_impl call config::expand_path (real $HOME), making them not fully testable with injected home dirs. Consolidate into a single expand_path(path, home) in config, and have the convenience wrapper call dirs::home_dir(). Update all CLI callers to use the home-parameterised version.",
+      "acceptanceCriteria": [
+        "config::expand_path_with_home(path, home) exists and is used by all CLI _impl functions",
+        "config::expand_path(path) delegates to expand_path_with_home with dirs::home_dir()",
+        "cli::expand_home private function is removed",
+        "sync_impl, push_impl, pull_impl use the home-parameterised version",
+        "All existing tests pass; status_impl uses the same function",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 5,
+      "status": "open",
+      "dependsOn": [
+        "US-004"
+      ],
+      "notes": "Audit ref: M-2 (src/cli/mod.rs vs src/config/mod.rs)"
+    },
+    {
+      "id": "US-006",
+      "title": "Fix push_impl consistency: update manifest and wire on_rejection",
+      "description": "L-3: push_impl does not update manifest.json (last_sync never written for push-only users). L-4: push_with_retry on_rejection is a no-op closure so retries can't recover from real push rejections. Fix push_impl to update the manifest like sync_impl does, and wire on_rejection to perform fetch + integrate_remote_changes so push retries can actually resolve divergence.",
+      "acceptanceCriteria": [
+        "push_impl calls build_updated_manifest and writes+stages manifest.json",
+        "push_with_retry on_rejection performs fetch('origin') + integrate_remote_changes",
+        "Test verifies manifest.json last_sync is updated after a successful push",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 6,
+      "status": "open",
+      "dependsOn": [
+        "US-005"
+      ],
+      "notes": "Audit refs: L-3 (push_impl manifest), L-4 (push_impl on_rejection no-op)"
+    },
+    {
+      "id": "US-007",
+      "title": "Deprecate StateCache::default_path and add crate-level documentation",
+      "description": "M-4: StateCache::default_path() is superseded by path_for_repo() but not deprecated. M-6: lib.rs has no crate-level //! documentation. Add #[deprecated] to default_path() pointing users to path_for_repo(), and add a crate-level doc block to lib.rs describing the crate purpose.",
+      "acceptanceCriteria": [
+        "StateCache::default_path() has #[deprecated(note = ...)] pointing to path_for_repo()",
+        "The one test calling default_path uses #[allow(deprecated)]",
+        "lib.rs has a //! crate-level doc block",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 7,
+      "status": "open",
+      "dependsOn": [
+        "US-004"
+      ],
+      "notes": "Audit refs: M-4 (src/scan/mod.rs:85–91), M-6 (src/lib.rs)"
+    },
+    {
+      "id": "US-008",
+      "title": "Update all stale documentation to match delivered implementation",
+      "description": "Fix all documentation drift and missing content: M-1 (AGENTS.md tree still shows pre-implementation layout), M-3 (dev guide CI section aspirational vs actual), M-8 (spec §13 crate structure), L-1 (AGENTS.md missing lib.rs, integration.rs, LICENSE, community files, CI dirs), L-2 (README missing chronicle errors, config, push, pull commands).",
+      "acceptanceCriteria": [
+        "AGENTS.md repository structure matches actual file layout including lib.rs, tests/, LICENSE, community docs, .github/, .forgejo/",
+        "docs/002-development-guide.md CI section references the actual workflow files",
+        "docs/specs/001-initial-delivery.md §13 matches the actual module file layout",
+        "README.md Usage section covers all CLI commands (init, import, sync, push, pull, status, errors, config, schedule)",
+        "All doc files with front-matter have date_modified bumped",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 8,
+      "status": "open",
+      "dependsOn": [
+        "US-007"
+      ],
+      "notes": "Audit refs: M-1 (AGENTS.md:55–65), M-3 (docs/002), M-8 (docs/specs/001 §13), L-1 (AGENTS.md), L-2 (README.md)"
+    }
+  ]
+}

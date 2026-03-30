@@ -2,7 +2,6 @@
 //
 // US-012: stage files via git2 index, format sync and import commit messages,
 // and commit staged changes with the canonical Chronicle committer identity.
-#![allow(dead_code)]
 
 use std::path::Path;
 

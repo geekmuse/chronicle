@@ -8,8 +8,8 @@
 - **Name:** chronicle
 - **Language:** Rust
 - **Purpose:** Synchronize Pi and Claude Code session history across machines where `$HOME` paths differ, using path canonicalization and Git as the storage/transport backend
-- **Current Version:** 0.1.0
-- **Status:** Early development
+- **Current Version:** 0.2.2
+- **Status:** Stable (v0.2.2)
 
 ## Quick Start — Quality Checks
 
@@ -39,9 +39,28 @@ chronicle/
 ├── AGENTS.md                        # THIS FILE — agent-facing guidance
 ├── CLAUDE.md                        # Claude-specific instructions
 ├── CHANGELOG.md                     # Version history (Keep a Changelog format)
+├── CONTRIBUTING.md                  # Contribution guidelines
+├── CODE_OF_CONDUCT.md               # Contributor Covenant code of conduct
+├── SECURITY.md                      # Security policy and vulnerability reporting
+├── LICENSE                          # MIT licence
 ├── Cargo.toml                       # Rust package manifest
+├── Cargo.lock                       # Dependency lock file (committed)
+├── deny.toml                        # cargo-deny licence/advisory allowlist
 ├── .editorconfig                    # Editor formatting rules
 ├── .gitattributes                   # Git line-ending normalization
+├── .gitignore                       # Ignored files
+├── .github/                         # GitHub-specific configuration
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.md
+│   │   └── feature_request.md
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── workflows/
+│       ├── ci.yml                   # GitHub Actions CI (build/lint/test/deny)
+│       └── release.yml              # GitHub Actions release (binary artefacts)
+├── .forgejo/                        # Forgejo-specific CI (mirrors .github/workflows)
+│   └── workflows/
+│       ├── ci.yml
+│       └── release.yml
 ├── docs/                            # Project documentation
 │   ├── 001-architecture.md          # System architecture and design
 │   ├── 002-development-guide.md     # Development workflow and tooling
@@ -52,18 +71,41 @@ chronicle/
 │   ├── references/                  # CLI reference, config reference
 │   ├── tasks/                       # Work items, backlogs
 │   └── research/                    # Spikes, investigations
+│       └── 001-codebase-audit.md    # v0.2.2 post-delivery codebase audit
 ├── src/                             # Source code
+│   ├── lib.rs                       # Library root (exposes modules; used by tests)
 │   ├── main.rs                      # CLI entry point (clap)
-│   ├── cli/                         # Command handlers
+│   ├── cli/
+│   │   └── mod.rs                   # All CLI commands (init, import, sync, push,
+│   │                                #   pull, status, errors, config, schedule)
 │   ├── config/                      # Config loading, validation, precedence
+│   │   ├── mod.rs
+│   │   ├── schema.rs                # Serde structs for config.toml
+│   │   └── machine_name.rs          # adjective-animal name generator
 │   ├── canon/                       # Canonicalization / de-canonicalization
+│   │   ├── mod.rs                   # Token registry, canonicalize/decanon entry points
+│   │   ├── fields.rs                # L2 whitelisted field path walker
+│   │   └── levels.rs                # L1/L2/L3 dispatch
 │   ├── merge/                       # Grow-only set merge for JSONL
+│   │   ├── mod.rs
+│   │   ├── entry.rs                 # Entry identity (type + id), parsing
+│   │   └── set_union.rs             # Grow-only set merge + prefix verification
 │   ├── git/                         # Git operations (git2/libgit2)
-│   ├── agents/                      # Pi and Claude-specific logic
+│   │   ├── mod.rs                   # Repo init, working tree management
+│   │   ├── fetch_push.rs            # Fetch, push with retry + backoff
+│   │   └── commit.rs                # Staging, commit message formatting
+│   ├── agents/
+│   │   └── mod.rs                   # Pi and Claude dir encoding / file naming
 │   ├── scheduler/                   # Cron scheduling
+│   │   ├── mod.rs
+│   │   └── cron.rs                  # Crontab read/write/install/uninstall
 │   ├── errors/                      # Error ring buffer
+│   │   ├── mod.rs
+│   │   └── ring_buffer.rs           # 30-entry error ring buffer (JSONL file)
 │   └── scan/                        # File change detection
-└── tests/                           # Integration tests
+│       └── mod.rs                   # mtime/size-based change detection + state cache
+└── tests/
+    └── integration.rs               # End-to-end multi-machine scenario tests
 ```
 
 ## Conventions
@@ -279,4 +321,4 @@ When investigating a tool, approach, or pattern:
 - [x] Scheduler (crontab install/uninstall/status)
 - [x] Error ring buffer
 - [x] Integration tests
-- [ ] CI/CD pipeline
+- [x] CI/CD pipeline
