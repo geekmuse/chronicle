@@ -57,14 +57,14 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 3,
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "US-002"
       ],
       "notes": "This is the main performance fix. The key insight is that repo mtime only changes when integrate_remote_changes writes new content — so on a typical cron run with remote changes, only the handful of changed files will be read.",
       "startedAt": "2026-03-30T13:13:04.074Z",
-      "updatedAt": "2026-03-30T13:13:04.074Z",
-      "completedAt": null
+      "updatedAt": "2026-03-30T14:48:27.230Z",
+      "completedAt": "2026-03-30T14:48:27.230Z"
     },
     {
       "id": "US-004",
@@ -81,9 +81,12 @@
         "If a new dependency is needed, verify it passes cargo deny check (license allowlist)"
       ],
       "priority": 4,
-      "status": "open",
+      "status": "in_progress",
       "dependsOn": [],
-      "notes": "Use non-blocking flock (LOCK_EX | LOCK_NB) so a second process fails fast rather than blocking. The lock file should be co-located with state.json (sibling of repo dir). On non-Unix platforms, skip locking gracefully."
+      "notes": "Use non-blocking flock (LOCK_EX | LOCK_NB) so a second process fails fast rather than blocking. The lock file should be co-located with state.json (sibling of repo dir). On non-Unix platforms, skip locking gracefully.",
+      "startedAt": "2026-03-30T14:48:27.344Z",
+      "updatedAt": "2026-03-30T14:48:27.344Z",
+      "completedAt": null
     },
     {
       "id": "US-005",

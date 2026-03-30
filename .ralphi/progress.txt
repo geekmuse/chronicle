@@ -68,3 +68,25 @@ Corrective Plan: N/A
   - US-003 will wire this into materialize_agent_dir; the cache key should be the
     repo-relative path string (same as StateCache keys)
 ---
+
+## 2026-03-30 - US-003
+Session: N/A
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Wired MaterializeCache into materialize_agent_dir to skip unchanged repo files
+- materialize_repo_to_local loads cache at start, saves after successful pass (both sync_impl and pull_impl benefit automatically)
+- config_hash = "level:home_token"; cache cleared when config changes
+- materialize_agent_dir gains `cache: &mut MaterializeCache` + `repo_rel_base: &str` (7 params, within clippy limit)
+- Per-file loop: fs::metadata mtime/size checked before read_to_string; cache hit → skip entirely
+- Cache entry updated after write AND after confirming identical local content (idempotent-skip path)
+- Updated 3 existing test call sites; added new test `materialize_cache_skips_unchanged_files_on_second_call`
+- Files changed: src/cli/mod.rs
+- Commit: ff697c5
+- **Learnings for future iterations:**
+  - 7 parameters is the clippy too_many_arguments limit (8+ triggers it); no attribute needed for 7
+  - `DateTime::<Utc>::from(SystemTime)` is the idiomatic mtime conversion in chrono
+  - Borrow checker is fine with `cache.files.get(&key)` in an `if let` followed by `cache.files.insert(key, ...)` — the immutable borrow ends before the mutable one starts
+  - `materialize_repo_to_local` is the single load/save site; sync_impl and pull_impl automatically get cache persistence because they both call this function
+---

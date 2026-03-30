@@ -403,6 +403,73 @@ fn import_agent_sessions(p: &ImportParams<'_>) -> Result<(usize, usize)> {
 }
 
 // ---------------------------------------------------------------------------
+// Advisory file lock (concurrency guard — Gap 2 fix)
+// ---------------------------------------------------------------------------
+
+/// Returns the path of the advisory lock file.  Co-located with the repo
+/// directory as a sibling (one level up), matching the `StateCache` pattern:
+/// `<parent_of_repo>/chronicle.lock`.
+pub fn lock_file_path(repo_path: &Path) -> PathBuf {
+    repo_path
+        .parent()
+        .unwrap_or(repo_path)
+        .join("chronicle.lock")
+}
+
+/// Tries to open and exclusively lock `<parent_of_repo>/chronicle.lock` in
+/// a non-blocking fashion.
+///
+/// - Returns `Ok(Some(file))` — lock acquired; caller must keep `file` alive
+///   for the duration of the critical section (dropped ⇒ lock released).
+/// - Returns `Ok(None)` — another process already holds the lock.
+/// - Returns `Err(_)` — unexpected I/O error.
+fn try_acquire_sync_lock(repo_path: &Path) -> Result<Option<fs::File>> {
+    let lock_path = lock_file_path(repo_path);
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create lock directory {}", parent.display()))?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open lock file {}", lock_path.display()))?;
+    if flock_exclusive_nb(&file)
+        .with_context(|| format!("flock failed on {}", lock_path.display()))?
+    {
+        Ok(Some(file))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Non-blocking exclusive `flock` on Unix.  Returns `true` if acquired,
+/// `false` if `EWOULDBLOCK` (another process holds the lock).  On non-Unix
+/// platforms this is a no-op that always returns `true`.
+#[cfg(unix)]
+fn flock_exclusive_nb(file: &fs::File) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd as _;
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if ret == 0 {
+        Ok(true)
+    } else {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::WouldBlock {
+            Ok(false)
+        } else {
+            Err(err)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
+fn flock_exclusive_nb(_file: &fs::File) -> std::io::Result<bool> {
+    Ok(true)
+}
+
+// ---------------------------------------------------------------------------
 // chronicle sync
 // ---------------------------------------------------------------------------
 
@@ -456,6 +523,17 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
         Some(cfg.storage.remote_url.as_str())
     };
     let follow_symlinks = cfg.general.follow_symlinks;
+
+    // Acquire advisory lock to prevent concurrent sync processes (Gap 2 fix).
+    // Uses non-blocking flock so a second cron invocation fails fast rather
+    // than queuing on the git index lock and causing a cascade.
+    let _sync_lock = match try_acquire_sync_lock(&repo_path)? {
+        Some(lock) => lock,
+        None => {
+            println!("[sync] Another sync is in progress — skipping this run.");
+            return Ok(());
+        }
+    };
 
     // -----------------------------------------------------------------------
     // Load state cache (missing file → empty; all files treated as New).
@@ -797,6 +875,15 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         Some(cfg.storage.remote_url.as_str())
     };
     let follow_symlinks = cfg.general.follow_symlinks;
+
+    // Acquire advisory lock to prevent concurrent push processes (Gap 2 fix).
+    let _sync_lock = match try_acquire_sync_lock(&repo_path)? {
+        Some(lock) => lock,
+        None => {
+            println!("[push] Another sync is in progress — skipping this run.");
+            return Ok(());
+        }
+    };
 
     // Load state cache (missing file → empty cache; all files treated as New).
     // Derive the path from the repo dir so each install gets its own cache.
@@ -4325,5 +4412,74 @@ mod tests {
             cache_path.exists(),
             "materialize-state.json must be persisted after first call"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // US-004: Advisory file lock
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lock_file_path_is_sibling_of_repo_dir() {
+        // Standard case: repo lives inside a parent directory.
+        let lock = lock_file_path(std::path::Path::new(
+            "/home/user/.local/share/chronicle/repo",
+        ));
+        assert!(
+            lock.to_string_lossy().ends_with("chronicle.lock"),
+            "lock file name must be chronicle.lock"
+        );
+        assert_eq!(
+            lock.parent().unwrap(),
+            std::path::Path::new("/home/user/.local/share/chronicle"),
+            "lock file must be a sibling of the repo dir"
+        );
+    }
+
+    #[test]
+    fn lock_file_path_falls_back_to_repo_path_when_no_parent() {
+        // Edge case: repo_path has no parent (e.g., just "repo" or "/").
+        let lock = lock_file_path(std::path::Path::new("repo"));
+        // unwrap_or(repo_path) kicks in; result still ends with chronicle.lock
+        assert!(lock.to_string_lossy().ends_with("chronicle.lock"));
+    }
+
+    #[test]
+    fn try_acquire_sync_lock_creates_and_releases_lock_file() {
+        let dir = TempDir::new().unwrap();
+        let repo_path = dir.path().join("repo");
+        // repo dir itself does not need to exist; only its parent does.
+
+        // Acquiring the lock should succeed and create chronicle.lock.
+        let lock = try_acquire_sync_lock(&repo_path)
+            .expect("try_acquire_sync_lock should not error")
+            .expect("lock should be acquired when no other holder exists");
+
+        let lock_path = lock_file_path(&repo_path);
+        assert!(lock_path.exists(), "chronicle.lock must be created");
+
+        // Drop the lock; on Unix this releases the flock.
+        drop(lock);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn second_lock_attempt_returns_none_while_first_held() {
+        let dir = TempDir::new().unwrap();
+        let repo_path = dir.path().join("repo");
+
+        // First acquisition — must succeed.
+        let lock1 = try_acquire_sync_lock(&repo_path)
+            .expect("first acquisition should not error")
+            .expect("first acquisition should succeed");
+
+        // Second attempt while first is held — must return None (EWOULDBLOCK).
+        let lock2 = try_acquire_sync_lock(&repo_path)
+            .expect("second acquisition should not error (no unexpected I/O)");
+        assert!(
+            lock2.is_none(),
+            "second acquisition must return None while first lock is held"
+        );
+
+        drop(lock1);
     }
 }
