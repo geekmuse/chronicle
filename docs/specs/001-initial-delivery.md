@@ -783,57 +783,49 @@ When enabled, Chronicle logs a one-time warning at startup:
 
 ### 13.1 Crate Structure
 
+> **Note (v0.2.2):** The delivered layout consolidates several planned sub-files into their parent `mod.rs`
+> (e.g., all CLI commands in `cli/mod.rs`; canonicalize/decanon/tokens in `canon/mod.rs`;
+> verify in `merge/set_union.rs`; repo management in `git/mod.rs`; both agents in `agents/mod.rs`).
+> Sub-files that were split out in the spec are omitted because they add no meaningful boundary at this scale.
+
 ```
 chronicle/
 ├── Cargo.toml
+├── Cargo.lock
 ├── src/
+│   ├── lib.rs                     # Library root (exposes modules; used by tests)
 │   ├── main.rs                    # CLI entry point (clap)
 │   ├── cli/
-│   │   ├── mod.rs
-│   │   ├── init.rs
-│   │   ├── import.rs
-│   │   ├── sync.rs
-│   │   ├── push.rs
-│   │   ├── pull.rs
-│   │   ├── status.rs
-│   │   ├── errors.rs
-│   │   ├── config.rs
-│   │   └── schedule.rs
+│   │   └── mod.rs                 # All CLI commands (init, import, sync, push, pull,
+│   │                              #   status, errors, config, schedule)
 │   ├── config/
 │   │   ├── mod.rs                 # Config loading, validation, precedence
 │   │   ├── schema.rs              # Serde structs for config.toml
-│   │   └── machine_name.rs        # Fun name generator
+│   │   └── machine_name.rs        # adjective-animal name generator
 │   ├── canon/
-│   │   ├── mod.rs
-│   │   ├── canonicalize.rs        # Local → canonical transforms
-│   │   ├── decanon.rs             # Canonical → local transforms
-│   │   ├── tokens.rs              # Token registry (SYNC_HOME + custom)
+│   │   ├── mod.rs                 # Token registry, canonicalize/decanon entry points
 │   │   ├── fields.rs              # L2 whitelisted field path walker
 │   │   └── levels.rs              # L1/L2/L3 dispatch
 │   ├── merge/
 │   │   ├── mod.rs
 │   │   ├── entry.rs               # Entry identity (type + id), parsing
-│   │   ├── set_union.rs           # Grow-only set merge algorithm
-│   │   └── verify.rs              # Prefix verification, mismatch detection
+│   │   └── set_union.rs           # Grow-only set merge + prefix verification
 │   ├── git/
-│   │   ├── mod.rs
-│   │   ├── repo.rs                # Init, clone, working tree management
+│   │   ├── mod.rs                 # Repo init, working tree management
 │   │   ├── fetch_push.rs          # Fetch, push with retry + backoff
 │   │   └── commit.rs              # Staging, commit message formatting
 │   ├── agents/
-│   │   ├── mod.rs
-│   │   ├── pi.rs                  # Pi-specific: dir encoding, file naming, schema knowledge
-│   │   └── claude.rs              # Claude-specific: dir encoding, file naming, schema knowledge
+│   │   └── mod.rs                 # Pi and Claude dir encoding / file naming
 │   ├── scheduler/
 │   │   ├── mod.rs
 │   │   └── cron.rs                # Crontab read/write/install/uninstall
 │   ├── errors/
 │   │   ├── mod.rs
-│   │   ├── ring_buffer.rs         # 30-entry error ring buffer (JSONL file)
-│   │   └── types.rs               # Error category enum, structured error type
+│   │   └── ring_buffer.rs         # 30-entry error ring buffer (JSONL file)
 │   └── scan/
-│       ├── mod.rs
-│       └── diff.rs                # Detect new/changed files vs. last sync state
+│       └── mod.rs                 # mtime/size-based change detection + state cache
+└── tests/
+    └── integration.rs             # End-to-end multi-machine scenario tests
 ```
 
 ### 13.2 Key Dependencies

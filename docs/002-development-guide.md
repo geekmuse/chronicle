@@ -1,6 +1,6 @@
 ---
 date_created: 2026-03-29
-date_modified: 2026-03-29
+date_modified: 2026-03-30
 status: active
 audience: both
 cross_references:
@@ -223,15 +223,24 @@ refactor(scope): restructure code     → PATCH version bump
 feat(scope)!: breaking change         → MAJOR version bump
 ```
 
-## CI/CD (Recommended)
+## CI/CD
 
-A CI pipeline should include:
+Two parallel CI pipelines are active:
 
-1. **Build** — `cargo build`
-2. **Lint** — `cargo fmt -- --check` + `cargo clippy -- -D warnings`
-3. **Test** — `cargo test`
-4. **License & Advisories** — `cargo deny check`
-5. **Doc Check** — Validate front-matter in `docs/` and subdirectories
+| File | Platform | Notes |
+|------|----------|-------|
+| `.github/workflows/ci.yml` | GitHub Actions | Matrix: `ubuntu-latest`, `macos-latest`; uses `EmbarkStudios/cargo-deny-action@v2` |
+| `.forgejo/workflows/ci.yml` | Forgejo / Gitea Actions | Single Linux runner; installs `cargo-deny` via `cargo install` |
+
+Both pipelines run the same four steps:
+
+1. **Format** — `cargo fmt --check`
+2. **Lint** — `cargo clippy -- -D warnings`
+3. **Build** — `cargo build`
+4. **Test** — `cargo test`
+5. **Licence** — `cargo deny check`
+
+Release pipelines (`.github/workflows/release.yml`, `.forgejo/workflows/release.yml`) build cross-platform binaries and attach them to tagged releases.
 
 ### Doc Validation Script
 
