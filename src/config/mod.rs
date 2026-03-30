@@ -45,22 +45,36 @@ pub(crate) fn config_path_with_xdg_home(xdg_config_home: Option<&str>) -> PathBu
     config_home.join("chronicle").join("config.toml")
 }
 
+/// Expand a `~/…` path to an absolute path using the provided `home` directory.
+///
+/// - `~/foo` → `home/foo`
+/// - `~` → `home`
+/// - Any other path → returned unchanged as a [`PathBuf`]
+///
+/// Prefer this over [`expand_path`] in testable `_impl` functions so the home
+/// directory can be injected rather than obtained from the real environment.
+#[must_use]
+pub fn expand_path_with_home(path: &str, home: &Path) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        home.join(rest)
+    } else if path == "~" {
+        home.to_path_buf()
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 /// Expand a `~/…` path to an absolute path using the user's home directory.
+///
+/// Delegates to [`expand_path_with_home`] with [`dirs::home_dir()`].
 ///
 /// - `~/foo` → `$HOME/foo`
 /// - `~` → `$HOME`
 /// - Any other path → returned unchanged as a [`PathBuf`]
 #[must_use]
 pub fn expand_path(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(rest)
-    } else if path == "~" {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
-    } else {
-        PathBuf::from(path)
-    }
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    expand_path_with_home(path, &home)
 }
 
 /// Load configuration following the precedence chain:
@@ -427,26 +441,48 @@ remote_url = "file://remote"
         assert_eq!(result, expected);
     }
 
-    /// `expand_path` correctly expands tilde prefixes.
+    /// `expand_path_with_home` correctly expands tilde prefixes using a fixed home.
     #[test]
     fn expand_path_tilde_slash() {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        assert_eq!(expand_path("~/foo/bar"), home.join("foo").join("bar"));
+        let home = PathBuf::from("/test/home");
+        assert_eq!(
+            expand_path_with_home("~/foo/bar", &home),
+            PathBuf::from("/test/home/foo/bar")
+        );
     }
 
     #[test]
     fn expand_path_bare_tilde() {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        assert_eq!(expand_path("~"), home);
+        let home = PathBuf::from("/test/home");
+        assert_eq!(expand_path_with_home("~", &home), home);
     }
 
     #[test]
     fn expand_path_absolute_unchanged() {
-        assert_eq!(expand_path("/abs/path"), PathBuf::from("/abs/path"));
+        let home = PathBuf::from("/test/home");
+        assert_eq!(
+            expand_path_with_home("/abs/path", &home),
+            PathBuf::from("/abs/path")
+        );
     }
 
     #[test]
     fn expand_path_relative_unchanged() {
-        assert_eq!(expand_path("relative/path"), PathBuf::from("relative/path"));
+        let home = PathBuf::from("/test/home");
+        assert_eq!(
+            expand_path_with_home("relative/path", &home),
+            PathBuf::from("relative/path")
+        );
+    }
+
+    #[test]
+    fn expand_path_delegates_to_expand_path_with_home() {
+        // `expand_path` must produce the same result as `expand_path_with_home`
+        // when called with the real home directory.
+        let real_home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        assert_eq!(
+            expand_path("~/foo"),
+            expand_path_with_home("~/foo", &real_home)
+        );
     }
 }
