@@ -282,6 +282,52 @@ chronicle schedule status
 
 ## Known Setup Gotchas
 
+**Project directory paths must be consistent across machines**
+
+Chronicle canonicalizes your home directory (`$HOME` → `{{SYNC_HOME}}`), but it
+does **not** automatically handle differences in the path structure beneath it.
+If your projects live at `~/Dev/` on one machine and `~/projects/` on another,
+Chronicle will treat them as entirely separate project trees — sessions will not
+merge, and both machines will accumulate independent histories that never converge.
+
+For example:
+
+| Machine | Raw path | Canonical form |
+|---------|----------|----------------|
+| A | `/Users/alice/Dev/myproject` | `{{SYNC_HOME}}/Dev/myproject` |
+| B | `/home/alice/projects/myproject` | `{{SYNC_HOME}}/projects/myproject` |
+
+These are different canonical paths. Chronicle will never merge their sessions.
+
+**The simplest fix:** use the same sub-`$HOME` path layout on every machine
+(e.g., always `~/Dev/`, always `~/code/`, etc.).
+
+**If your paths already differ:** define a custom token that maps each machine's
+projects root to the same canonical name. In each machine's
+`~/.config/chronicle/config.toml`:
+
+```toml
+# Machine A  (~/.config/chronicle/config.toml)
+[canonicalization.tokens]
+"{{SYNC_PROJECTS}}" = "/Users/alice/Dev"
+```
+
+```toml
+# Machine B  (~/.config/chronicle/config.toml)
+[canonicalization.tokens]
+"{{SYNC_PROJECTS}}" = "/home/alice/projects"
+```
+
+With this in place, both paths canonicalize to `{{SYNC_PROJECTS}}/myproject`
+and sessions will merge correctly. The token value is machine-local and never
+stored in the shared repository.
+
+> **Note:** Custom tokens only help for sessions created *after* the token is
+> configured. Pre-existing sessions already stored under mismatched paths will
+> remain separate. Plan your directory layout before the first sync.
+
+---
+
 **SSH agent not available in cron**
 
 Chronicle's `schedule install` command generates cron entries that automatically
