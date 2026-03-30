@@ -191,7 +191,7 @@ mod tests {
 
     fn make_manager(dir: &TempDir) -> RepoManager {
         let path = dir.path().join("repo");
-        RepoManager::init_or_open(&path, None).expect("init repo")
+        RepoManager::init_or_open(&path, None, "main").expect("init repo")
     }
 
     // -----------------------------------------------------------------------

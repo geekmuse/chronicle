@@ -154,6 +154,8 @@ pub struct RepoManager {
     repo: git2::Repository,
     /// Absolute path to the repository working tree root.
     repo_path: PathBuf,
+    /// The branch Chronicle operates on (e.g. `"main"`).
+    pub branch: String,
 }
 
 impl RepoManager {
@@ -168,11 +170,16 @@ impl RepoManager {
     ///
     /// Returns [`GitError`] if git2 operations fail or if parent directories
     /// cannot be created.
-    pub fn init_or_open(repo_path: &Path, remote_url: Option<&str>) -> Result<Self, GitError> {
-        let repo = open_or_init(repo_path)?;
+    pub fn init_or_open(
+        repo_path: &Path,
+        remote_url: Option<&str>,
+        branch: &str,
+    ) -> Result<Self, GitError> {
+        let repo = open_or_init(repo_path, branch)?;
         let manager = Self {
             repo,
             repo_path: repo_path.to_path_buf(),
+            branch: branch.to_owned(),
         };
         if let Some(url) = remote_url.filter(|u| !u.is_empty()) {
             manager.set_remote("origin", url)?;
@@ -311,13 +318,17 @@ impl RepoManager {
 /// repository there.
 ///
 /// Parent directories are created when `init` is triggered.
-fn open_or_init(path: &Path) -> Result<git2::Repository, GitError> {
+fn open_or_init(path: &Path, branch: &str) -> Result<git2::Repository, GitError> {
     match git2::Repository::open(path) {
         Ok(repo) => Ok(repo),
         Err(e) if e.code() == git2::ErrorCode::NotFound => {
             // Path does not exist or is not a git repository — initialize.
+            // Use RepositoryInitOptions to force the configured branch name
+            // regardless of the system's init.defaultBranch setting.
             fs::create_dir_all(path).map_err(|io_err| GitError::io(path, io_err))?;
-            Ok(git2::Repository::init(path)?)
+            let mut opts = git2::RepositoryInitOptions::new();
+            opts.initial_head(branch);
+            Ok(git2::Repository::init_opts(path, &opts)?)
         }
         Err(e) => Err(GitError::Git2(e)),
     }
@@ -336,6 +347,11 @@ mod tests {
         tempfile::tempdir().expect("create tempdir")
     }
 
+    /// Convenience wrapper: init or open with the default branch (`"main"`).
+    fn init(path: &std::path::Path, remote: Option<&str>) -> RepoManager {
+        RepoManager::init_or_open(path, remote, "main").expect("init_or_open")
+    }
+
     // -----------------------------------------------------------------------
     // init_or_open — basic init
     // -----------------------------------------------------------------------
@@ -344,7 +360,7 @@ mod tests {
     fn init_creates_repo_at_path() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init should succeed");
+        let manager = init(&repo_path, None);
         assert!(repo_path.join(".git").exists(), ".git directory must exist");
         assert_eq!(manager.repo_path(), repo_path.as_path());
     }
@@ -353,7 +369,7 @@ mod tests {
     fn init_creates_parent_directories() {
         let dir = tmp();
         let repo_path = dir.path().join("a").join("b").join("repo");
-        RepoManager::init_or_open(&repo_path, None).expect("init with nested path");
+        init(&repo_path, None);
         assert!(repo_path.join(".git").exists());
     }
 
@@ -366,11 +382,11 @@ mod tests {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
         // First init.
-        RepoManager::init_or_open(&repo_path, None).expect("first init");
+        init(&repo_path, None);
         // Write a sentinel file to verify the working tree is preserved.
         fs::write(repo_path.join("sentinel.txt"), b"hello").unwrap();
         // Re-open — must not wipe the working tree.
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("re-open must succeed");
+        let manager = init(&repo_path, None);
         assert!(
             manager.repo_path().join("sentinel.txt").exists(),
             "working tree must be preserved on re-open"
@@ -381,8 +397,8 @@ mod tests {
     fn open_existing_returns_correct_path() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        RepoManager::init_or_open(&repo_path, None).expect("init");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("re-open");
+        init(&repo_path, None);
+        let manager = init(&repo_path, None);
         assert_eq!(manager.repo_path(), repo_path.as_path());
     }
 
@@ -395,7 +411,7 @@ mod tests {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
         let url = "https://example.com/chronicle.git";
-        let manager = RepoManager::init_or_open(&repo_path, Some(url)).expect("init with remote");
+        let manager = init(&repo_path, Some(url));
         let remote = manager
             .repository()
             .find_remote("origin")
@@ -409,8 +425,8 @@ mod tests {
         let repo_path = dir.path().join("repo");
         let url1 = "https://example.com/old.git";
         let url2 = "https://example.com/new.git";
-        RepoManager::init_or_open(&repo_path, Some(url1)).expect("first init");
-        let manager = RepoManager::init_or_open(&repo_path, Some(url2)).expect("reopen");
+        init(&repo_path, Some(url1));
+        let manager = init(&repo_path, Some(url2));
         let remote = manager
             .repository()
             .find_remote("origin")
@@ -422,7 +438,7 @@ mod tests {
     fn no_remote_when_url_is_empty_string() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, Some("")).expect("init with empty url");
+        let manager = init(&repo_path, Some(""));
         assert!(
             manager.repository().find_remote("origin").is_err(),
             "no origin remote for empty URL"
@@ -433,7 +449,7 @@ mod tests {
     fn no_remote_when_url_is_none() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
         assert!(
             manager.repository().find_remote("origin").is_err(),
             "no origin remote when url=None"
@@ -448,7 +464,7 @@ mod tests {
     fn working_tree_directories_created() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
         manager.ensure_working_tree().expect("ensure_working_tree");
 
         assert!(
@@ -469,7 +485,7 @@ mod tests {
     fn working_tree_gitkeep_files_created() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
         manager.ensure_working_tree().expect("ensure_working_tree");
 
         assert!(
@@ -494,7 +510,7 @@ mod tests {
     fn ensure_working_tree_is_idempotent() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
         manager.ensure_working_tree().expect("first call");
         manager
             .ensure_working_tree()
@@ -509,7 +525,7 @@ mod tests {
     fn ensure_manifest_creates_default_file() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
         manager.ensure_working_tree().expect("working tree");
         manager.ensure_manifest().expect("ensure_manifest");
 
@@ -525,7 +541,7 @@ mod tests {
     fn ensure_manifest_does_not_overwrite_existing() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
         manager.ensure_working_tree().expect("working tree");
         manager.ensure_manifest().expect("first ensure");
 
@@ -555,7 +571,7 @@ mod tests {
     fn manifest_round_trip_with_machine_entry() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
 
         let mut manifest = Manifest::default();
         manifest.machines.insert(
@@ -593,7 +609,7 @@ mod tests {
     fn read_manifest_returns_default_when_file_missing() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
         // No working tree setup, no manifest file.
         let manifest = manager
             .read_manifest()
@@ -606,7 +622,7 @@ mod tests {
     fn last_sync_absent_from_json_when_none() {
         let dir = tmp();
         let repo_path = dir.path().join("repo");
-        let manager = RepoManager::init_or_open(&repo_path, None).expect("init");
+        let manager = init(&repo_path, None);
 
         let mut manifest = Manifest::default();
         manifest.machines.insert(

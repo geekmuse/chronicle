@@ -103,6 +103,18 @@ impl StateCache {
             .join("chronicle")
             .join("state.json")
     }
+
+    /// Return the state cache path co-located with a specific repo directory.
+    ///
+    /// Placing the cache next to the repo keeps it isolated to that
+    /// installation, which also prevents test parallelism races when multiple
+    /// tests each use a distinct tempdir for `storage.repo_path`.
+    ///
+    /// Path: `<repo_path>/../state.json` (sibling of the repo dir).
+    #[must_use]
+    pub fn path_for_repo(repo_path: &std::path::Path) -> PathBuf {
+        repo_path.parent().unwrap_or(repo_path).join("state.json")
+    }
 }
 
 // ─── Scanner ──────────────────────────────────────────────────────────────────

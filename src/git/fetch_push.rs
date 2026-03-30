@@ -132,9 +132,9 @@ impl RepoManager {
     pub(crate) fn push_head(&self, remote_name: &str) -> Result<(), GitError> {
         let mut remote = self.repo.find_remote(remote_name)?;
 
-        // Derive refspec from the current HEAD branch name.
-        let head = self.repo.head()?;
-        let branch_ref = head.name().unwrap_or("refs/heads/main").to_owned();
+        // Use the configured branch name — never derive from HEAD, which can
+        // vary by machine depending on the system's init.defaultBranch setting.
+        let branch_ref = format!("refs/heads/{}", self.branch);
         let refspec = format!("{}:{}", branch_ref, branch_ref);
 
         // The push_update_reference callback fires once per pushed ref.
@@ -679,7 +679,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_local_repo(dir: &TempDir) -> crate::git::RepoManager {
-        crate::git::RepoManager::init_or_open(dir.path(), None).expect("init local repo")
+        crate::git::RepoManager::init_or_open(dir.path(), None, "main").expect("init local repo")
     }
 
     fn make_bare_remote(dir: &TempDir) -> git2::Repository {

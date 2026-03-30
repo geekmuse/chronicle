@@ -81,7 +81,7 @@ pub fn handle_init(remote: Option<String>) -> Result<()> {
         Some(cfg.storage.remote_url.as_str())
     };
 
-    let manager = git::RepoManager::init_or_open(&repo_path, remote_url)
+    let manager = git::RepoManager::init_or_open(&repo_path, remote_url, &cfg.storage.branch)
         .context("failed to initialize git repository")?;
     manager
         .ensure_working_tree()
@@ -151,7 +151,7 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
         None
     } else {
         Some(
-            git::RepoManager::init_or_open(&repo_path, remote_url)
+            git::RepoManager::init_or_open(&repo_path, remote_url, &cfg.storage.branch)
                 .context("failed to open git repository")?,
         )
     };
@@ -444,8 +444,10 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
 
     // -----------------------------------------------------------------------
     // Load state cache (missing file → empty; all files treated as New).
+    // Derive the path from the repo dir so each Chronicle install (and each
+    // test's tempdir) gets its own isolated cache.
     // -----------------------------------------------------------------------
-    let cache_path = scan::StateCache::default_path();
+    let cache_path = scan::StateCache::path_for_repo(&repo_path);
     let mut state_cache =
         scan::StateCache::load(&cache_path).context("failed to load state cache")?;
 
@@ -520,7 +522,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     // -----------------------------------------------------------------------
     // Phase 1: Outgoing — canonicalize changed files, stage, commit.
     // -----------------------------------------------------------------------
-    let manager = git::RepoManager::init_or_open(&repo_path, remote_url)
+    let manager = git::RepoManager::init_or_open(&repo_path, remote_url, &cfg.storage.branch)
         .context("failed to open git repository")?;
 
     let mut pi_staged: Vec<PathBuf> = Vec::new();
@@ -760,7 +762,8 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let follow_symlinks = cfg.general.follow_symlinks;
 
     // Load state cache (missing file → empty cache; all files treated as New).
-    let cache_path = scan::StateCache::default_path();
+    // Derive the path from the repo dir so each install gets its own cache.
+    let cache_path = scan::StateCache::path_for_repo(&repo_path);
     let mut state_cache =
         scan::StateCache::load(&cache_path).context("failed to load state cache")?;
 
@@ -829,7 +832,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let manager = git::RepoManager::init_or_open(&repo_path, remote_url)
+    let manager = git::RepoManager::init_or_open(&repo_path, remote_url, &cfg.storage.branch)
         .context("failed to open git repository")?;
 
     let mut pi_staged: Vec<PathBuf> = Vec::new();
@@ -1122,7 +1125,7 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         Some(cfg.storage.remote_url.as_str())
     };
 
-    let manager = git::RepoManager::init_or_open(&repo_path, remote_url)
+    let manager = git::RepoManager::init_or_open(&repo_path, remote_url, &cfg.storage.branch)
         .context("failed to open git repository")?;
 
     // Step 1: Fetch from remote.
@@ -1163,10 +1166,9 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
 fn integrate_remote_changes(manager: &git::RepoManager, machine_name: &str) -> Result<usize> {
     let repo = manager.repository();
 
-    // Locate the remote tracking ref (try main, then master).
-    let remote_ref = repo
-        .find_reference("refs/remotes/origin/main")
-        .or_else(|_| repo.find_reference("refs/remotes/origin/master"));
+    // Locate the remote tracking ref using the configured branch name.
+    let tracking_ref = format!("refs/remotes/origin/{}", manager.branch);
+    let remote_ref = repo.find_reference(&tracking_ref);
 
     let remote_ref = match remote_ref {
         Ok(r) => r,
@@ -1663,7 +1665,7 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     // --- Last sync time from manifest ---------------------------------------
     let repo_path = expand_home(&cfg.storage.repo_path, home);
     let last_sync_str = if repo_path.exists() {
-        match git::RepoManager::init_or_open(&repo_path, None) {
+        match git::RepoManager::init_or_open(&repo_path, None, "main") {
             Ok(manager) => match manager.read_manifest() {
                 Ok(manifest) => {
                     if let Some(entry) = manifest.machines.get(&cfg.general.machine_name) {
@@ -1686,7 +1688,8 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
 
     // --- Pending local changes via scanner ----------------------------------
     let follow_symlinks = cfg.general.follow_symlinks;
-    let state_cache = scan::StateCache::load(&scan::StateCache::default_path()).unwrap_or_default();
+    let state_cache =
+        scan::StateCache::load(&scan::StateCache::path_for_repo(&repo_path)).unwrap_or_default();
 
     let mut pending_new = 0usize;
     let mut pending_mod = 0usize;
@@ -2092,7 +2095,7 @@ mod tests {
             Some(cfg.storage.remote_url.as_str())
         };
 
-        let manager = git::RepoManager::init_or_open(&repo_path, remote_url)
+        let manager = git::RepoManager::init_or_open(&repo_path, remote_url, &cfg.storage.branch)
             .context("failed to initialize git repository")?;
         manager.ensure_working_tree()?;
         manager.ensure_manifest()?;
@@ -3433,7 +3436,7 @@ mod tests {
         sync_impl(false, true, &config_path, &home).unwrap();
 
         // State cache must contain an entry keyed by the session file's absolute path.
-        let cache = scan::StateCache::load(&scan::StateCache::default_path()).unwrap();
+        let cache = scan::StateCache::load(&scan::StateCache::path_for_repo(&repo_path)).unwrap();
         let session_key = session_file.to_string_lossy().into_owned();
         assert!(
             cache.files.contains_key(&session_key),
@@ -3594,7 +3597,7 @@ mod tests {
         .unwrap();
 
         // Init repo so manifest reads are possible.
-        git::RepoManager::init_or_open(&repo_path, None)
+        git::RepoManager::init_or_open(&repo_path, None, "main")
             .unwrap()
             .ensure_working_tree()
             .unwrap();
@@ -3613,7 +3616,7 @@ mod tests {
         let pi_sessions = dir.path().join("pi_sessions");
         let home = dir.path().to_path_buf();
 
-        let manager = git::RepoManager::init_or_open(&repo_path, None).unwrap();
+        let manager = git::RepoManager::init_or_open(&repo_path, None, "main").unwrap();
         manager.ensure_working_tree().unwrap();
         manager.ensure_manifest().unwrap();
 
