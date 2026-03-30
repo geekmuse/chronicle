@@ -882,11 +882,26 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         return Ok(());
     }
 
+    let now = Utc::now();
+
+    // Prepare updated manifest (upsert last_sync for this machine).
+    let updated_manifest = build_updated_manifest(&manager, &machine_name, now)
+        .context("failed to build updated manifest")?;
+
     // Stage all changed files.
     let staged_refs: Vec<&Path> = all_staged.iter().map(|p| p.as_path()).collect();
     manager
         .stage_files(&staged_refs)
         .context("failed to stage files for push")?;
+
+    // Write and stage manifest.json alongside the session changes.
+    manager
+        .write_manifest(&updated_manifest)
+        .context("failed to write manifest")?;
+    let manifest_rel = PathBuf::from(".chronicle/manifest.json");
+    manager
+        .stage_files(&[manifest_rel.as_path()])
+        .context("failed to stage manifest")?;
 
     // Create sync commit.
     let summary = git::SyncSummary {
@@ -895,17 +910,26 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         pi_total,
         claude_total,
     };
-    let now = Utc::now();
     let msg = git::format_sync_message(&machine_name, &now, &summary);
     manager
         .commit_if_staged(&msg, &machine_name)
         .context("failed to commit staged files")?;
 
     // Push with retry (§6.5).  On exhaustion, log to ring buffer and fail.
+    // on_rejection performs fetch + integrate so retries can resolve divergence.
     let ring_buf = errors::ring_buffer::RingBuffer::new(
         errors::ring_buffer::RingBuffer::path_for_repo(&repo_path),
     );
-    match manager.push_with_retry("origin", || Ok(()), std::thread::sleep) {
+    match manager.push_with_retry(
+        "origin",
+        || {
+            manager.fetch("origin")?;
+            integrate_remote_changes(&manager, &machine_name)
+                .map(|_| ())
+                .map_err(|e| git::GitError::Manifest(e.to_string()))
+        },
+        std::thread::sleep,
+    ) {
         Ok(()) => {
             println!(
                 "Pushed {} file(s) ({} new, {} modified) to remote.",
@@ -2886,6 +2910,58 @@ mod tests {
         assert!(
             written.contains("\"B\""),
             "entry B must be in merged result; got: {written:?}"
+        );
+    }
+
+    #[test]
+    fn push_updates_manifest_last_sync() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let repo_path = dir.path().join("repo");
+        let remote_path = dir.path().join("remote");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let claude_sessions = dir.path().join("claude_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        git2::Repository::init_bare(&remote_path).unwrap();
+
+        let session_dir = pi_sessions.join(pi_session_dir_name(&home));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("s.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"1\"}\n",
+        )
+        .unwrap();
+
+        write_push_config(
+            &config_path,
+            &repo_path,
+            &remote_path,
+            &pi_sessions,
+            &claude_sessions,
+            "test-machine",
+        );
+
+        push_impl(false, &config_path, &home).unwrap();
+
+        // After a successful push, manifest.json must exist and last_sync must be set.
+        let manifest_path = repo_path.join(".chronicle").join("manifest.json");
+        assert!(
+            manifest_path.exists(),
+            "manifest.json must be written to repo after push"
+        );
+        let content = std::fs::read_to_string(&manifest_path).unwrap();
+        let manifest: git::Manifest = serde_json::from_str(&content).unwrap();
+        let entry = manifest.machines.get("test-machine");
+        assert!(
+            entry.is_some(),
+            "machine entry must exist in manifest after push"
+        );
+        assert!(
+            entry.unwrap().last_sync.is_some(),
+            "last_sync must be set for 'test-machine' after push"
         );
     }
 
