@@ -692,15 +692,10 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     // -----------------------------------------------------------------------
     // Phase 3: Incoming — materialize repo working tree -> local agent dirs.
     //
-    // Fast path: skip the full 1.7 GB repo scan when nothing arrived from the
-    // remote AND no outgoing files were committed this cycle.  Materialize
-    // still runs when remote_integrated > 0 (new remote content) or when
-    // outgoing_count > 0 (we just committed, so we should reflect that
-    // back to local dirs).
+    // Fast path: skip the full repo scan when nothing arrived from the remote.
+    // Outgoing files came FROM local and are already present, so an
+    // outgoing-only cycle needs no materialization pass.
     // -----------------------------------------------------------------------
-    // Only materialize when remote content actually arrived — outgoing files
-    // came FROM local and are already there, so an outgoing-only cycle needs
-    // no materialization pass.
     let materialized = if remote_integrated > 0 {
         materialize_repo_to_local(&repo_path, &cfg, home, &registry)
             .context("failed to materialize session files")?
@@ -1241,13 +1236,24 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         .context("failed to integrate remote changes")?;
 
     // Step 3: Materialize repo files to local agent session directories.
-    let materialized = materialize_repo_to_local(&repo_path, &cfg, home, &registry)
-        .context("failed to materialize session files")?;
+    //
+    // Fast path: skip the full repo scan when nothing arrived from the remote.
+    // Mirrors the same guard in sync_impl — outgoing-only or no-op pull cycles
+    // need no materialization pass.
+    let materialized = if integrated > 0 {
+        materialize_repo_to_local(&repo_path, &cfg, home, &registry)
+            .context("failed to materialize session files")?
+    } else {
+        println!("[pull] Nothing to materialize — no remote changes arrived.");
+        0
+    };
 
-    println!(
-        "Pull complete: {} remote file(s) integrated, {} file(s) materialized locally.",
-        integrated, materialized
-    );
+    if integrated > 0 {
+        println!(
+            "Pull complete: {} remote file(s) integrated, {} file(s) materialized locally.",
+            integrated, materialized
+        );
+    }
     Ok(())
 }
 
@@ -3136,6 +3142,70 @@ mod tests {
         assert!(
             !local_content.contains("{{SYNC_HOME}}"),
             "de-canonicalized content must not contain the canonical token; got: {local_content:?}"
+        );
+    }
+
+    #[test]
+    fn pull_skips_materialize_when_no_remote_changes() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let repo_path = dir.path().join("repo");
+        let remote_path = dir.path().join("remote");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let claude_sessions = dir.path().join("claude_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        // Create a bare empty remote.  No commits pushed yet, so
+        // integrate_remote_changes will return 0 (no tracking ref found).
+        {
+            let mut opts = git2::RepositoryInitOptions::new();
+            opts.bare(true);
+            opts.initial_head("main");
+            git2::Repository::init_opts(&remote_path, &opts).unwrap();
+        }
+
+        write_push_config(
+            &config_path,
+            &repo_path,
+            &remote_path,
+            &pi_sessions,
+            &claude_sessions,
+            "test-machine",
+        );
+
+        // Initialise the local working repo and plant a canonical session file
+        // in its working tree.  pull_impl will re-open this repo and find it
+        // has content that *could* be materialized — but must not be, because
+        // the remote has no new commits.
+        {
+            let remote_url = remote_path.to_str().unwrap();
+            git::RepoManager::init_or_open(&repo_path, Some(remote_url), "main").unwrap();
+
+            let canonical_dir = repo_path
+                .join("pi")
+                .join("sessions")
+                .join("--{{SYNC_HOME}}-Dev-foo--");
+            std::fs::create_dir_all(&canonical_dir).unwrap();
+            std::fs::write(
+                canonical_dir.join("session.jsonl"),
+                b"{\"type\":\"session\",\"id\":\"1\",\"cwd\":\"{{SYNC_HOME}}/Dev\"}\n",
+            )
+            .unwrap();
+        }
+
+        // pull_impl must succeed and skip materialization (integrated == 0).
+        pull_impl(false, &config_path, &home).unwrap();
+
+        // The local pi_sessions directory must NOT have been populated.
+        let local_dir = pi_sessions.join(pi_session_dir_name(&home));
+        let dir_is_empty =
+            !local_dir.exists() || std::fs::read_dir(&local_dir).unwrap().next().is_none();
+        assert!(
+            dir_is_empty,
+            "materialize must be skipped when integrated == 0; \
+             found files in {local_dir:?}"
         );
     }
 
