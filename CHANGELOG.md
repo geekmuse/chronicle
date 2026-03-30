@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.2.1] - 2026-03-30
+
+### Fixed
+- **Git SSH authentication** — added explicit `credentials` callback to `fetch()` and `push_head()` using `ssh_key_from_agent`, fixing `authentication required but no callback set` errors on platforms where libgit2 does not implicitly detect `ssh-agent`
+
 ## [0.2.0] - 2026-03-29
 
 ### Added
@@ -46,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project initialized
 
-[Unreleased]: ssh://git@git.bradleyscampbell.net:10022/geekmuse/chronicle.git/compare/v0.2.0...HEAD
+[Unreleased]: ssh://git@git.bradleyscampbell.net:10022/geekmuse/chronicle.git/compare/v0.2.1...HEAD
+[0.2.1]: ssh://git@git.bradleyscampbell.net:10022/geekmuse/chronicle.git/compare/v0.2.0...v0.2.1
 [0.2.0]: ssh://git@git.bradleyscampbell.net:10022/geekmuse/chronicle.git/compare/v0.1.0...v0.2.0
 [0.1.0]: ssh://git@git.bradleyscampbell.net:10022/geekmuse/chronicle.git/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 ---
 date_created: 2026-03-29
-date_modified: 2026-03-29
+date_modified: 2026-03-30
 status: active
 audience: both
 cross_references:
@@ -42,7 +42,7 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 | Config | Config loading, validation, precedence (CLI > env > file > defaults) | `src/config/` |
 | Canonicalization | Replace machine-specific `$HOME` paths with `{{SYNC_HOME}}` token and reverse | `src/canon/` |
 | Merge | Grow-only set merge of JSONL session entries | `src/merge/` |
-| Git | Repo init, fetch, push with retry, commit formatting | `src/git/` |
+| Git | Repo init, fetch, push with retry, commit formatting, SSH/HTTPS credential callbacks | `src/git/` |
 | Agents | Pi and Claude-specific directory encoding and file naming | `src/agents/` |
 | Scheduler | Crontab installation and management | `src/scheduler/` |
 | Scan | File change detection via mtime/size cache | `src/scan/` |
@@ -75,7 +75,7 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 | Grow-only CRDT merge | Session files are append-only; set-union is commutative, associative, idempotent | — |
 | `{{SYNC_HOME}}` token | Visually distinct, doesn't conflict with shell/markdown/regex | — |
 | Cron for scheduling | Single cross-platform code path for macOS + Linux, zero build complexity | — |
-| `git2` (libgit2) over CLI | No system git dependency, programmatic error handling | — |
+| `git2` (libgit2) over CLI | No system git dependency, programmatic error handling, explicit SSH agent credentials callback | — |
 
 > For detailed decision records, see [`docs/adrs/`](adrs/).
 

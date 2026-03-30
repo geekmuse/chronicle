@@ -7,6 +7,32 @@ use std::time::Duration;
 use super::{GitError, RepoManager, PUSH_BACKOFF_SECS};
 
 // ---------------------------------------------------------------------------
+// SSH credentials callback
+// ---------------------------------------------------------------------------
+
+/// Credentials callback that delegates SSH authentication to the running
+/// `ssh-agent`.  For HTTPS remotes, falls back to the git credential helper.
+///
+/// libgit2 does not always auto-detect `ssh-agent` across platforms and
+/// builds, so an explicit callback is required for reliable SSH auth.
+fn ssh_credentials_callback(
+    url: &str,
+    username_from_url: Option<&str>,
+    allowed_types: git2::CredentialType,
+) -> Result<git2::Cred, git2::Error> {
+    if allowed_types.contains(git2::CredentialType::SSH_KEY) {
+        let user = username_from_url.unwrap_or("git");
+        git2::Cred::ssh_key_from_agent(user)
+    } else if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+        git2::Cred::credential_helper(&git2::Config::open_default()?, url, username_from_url)
+    } else {
+        Err(git2::Error::from_str(
+            "no suitable credential type available",
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Network-error classification
 // ---------------------------------------------------------------------------
 
@@ -45,7 +71,10 @@ impl RepoManager {
     pub fn fetch(&self, remote_name: &str) -> Result<(), GitError> {
         let mut remote = self.repo.find_remote(remote_name)?;
         let refspec = format!("+refs/heads/*:refs/remotes/{}/*", remote_name);
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(ssh_credentials_callback);
         let mut opts = git2::FetchOptions::new();
+        opts.remote_callbacks(callbacks);
         remote.fetch(&[refspec.as_str()], Some(&mut opts), None)?;
         Ok(())
     }
@@ -73,6 +102,7 @@ impl RepoManager {
         {
             let rej = &mut rejection;
             let mut callbacks = git2::RemoteCallbacks::new();
+            callbacks.credentials(ssh_credentials_callback);
             callbacks.push_update_reference(move |refname, status| {
                 if let Some(msg) = status {
                     *rej = Some((refname.to_owned(), msg.to_owned()));
