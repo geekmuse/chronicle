@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.4.1] - 2026-03-30
+
+### Fixed
+- **State cache never populated for existing sessions** — `process_push_file`
+  returned `Ok(None)` when the repo already had identical content, so those
+  files were never added to the state cache. Every subsequent scan re-classified
+  all of them as new, causing each cron sync to re-read and re-merge thousands
+  of files, run for 3–5 minutes, and overlap with the next cron invocation.
+  Now returns `Ok(Some(PushedFile { stage: false, … }))` so the file’s
+  mtime/size is recorded and future scans skip it as `Unchanged`.
+
 ## [0.4.0] - 2026-03-30
 
 ### Added
@@ -125,7 +136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project initialized
 
-[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.3...v0.2.4
