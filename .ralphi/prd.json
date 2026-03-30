@@ -39,8 +39,8 @@
       "dependsOn": [],
       "notes": "Schema/persistence layer only — wiring into materialize_agent_dir is US-003. Keep the struct simple; mirror StateCache patterns exactly.",
       "startedAt": "2026-03-30T13:04:32.915Z",
-      "updatedAt": "2026-03-30T13:20:00.000Z",
-      "completedAt": "2026-03-30T13:20:00.000Z"
+      "updatedAt": "2026-03-30T13:13:03.998Z",
+      "completedAt": "2026-03-30T13:13:03.998Z"
     },
     {
       "id": "US-003",
@@ -57,11 +57,14 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 3,
-      "status": "open",
+      "status": "in_progress",
       "dependsOn": [
         "US-002"
       ],
-      "notes": "This is the main performance fix. The key insight is that repo mtime only changes when integrate_remote_changes writes new content — so on a typical cron run with remote changes, only the handful of changed files will be read."
+      "notes": "This is the main performance fix. The key insight is that repo mtime only changes when integrate_remote_changes writes new content — so on a typical cron run with remote changes, only the handful of changed files will be read.",
+      "startedAt": "2026-03-30T13:13:04.074Z",
+      "updatedAt": "2026-03-30T13:13:04.074Z",
+      "completedAt": null
     },
     {
       "id": "US-004",
