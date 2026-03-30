@@ -113,6 +113,61 @@ fn parse_interval_minutes(interval: &str) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// Jitter
+// ---------------------------------------------------------------------------
+
+/// Compute a deterministic jitter (in seconds) for the given machine name.
+///
+/// The jitter spreads machines uniformly across the sync interval so that
+/// machines sharing the same `*/5` (or similar) cron expression don't all
+/// hit the remote at the same instant.
+///
+/// # Arguments
+///
+/// * `machine_name` — the configured machine identity (e.g. `"cheerful-sparrow"`).
+/// * `sync_interval` — the interval string from config (e.g. `"5m"`).
+/// * `jitter_config` — the `sync_jitter_secs` config value:
+///   - `0` (default): auto — use the full interval as the jitter window.
+///   - `> 0`: cap the jitter to this many seconds.
+///   - `< 0`: disable jitter entirely (return 0).
+///
+/// # Returns
+///
+/// Duration in seconds to sleep before starting the sync cycle.
+#[must_use]
+pub fn compute_jitter(machine_name: &str, sync_interval: &str, jitter_config: i32) -> u64 {
+    if jitter_config < 0 || machine_name.is_empty() {
+        return 0;
+    }
+
+    let interval_secs = parse_interval_minutes(sync_interval).saturating_mul(60);
+    if interval_secs == 0 {
+        return 0;
+    }
+
+    // Cap: either the configured max or 90% of the interval (leave 10% headroom
+    // so the sync itself has time to complete before the next cron fire).
+    let window = if jitter_config > 0 {
+        (jitter_config as u64).min(interval_secs * 9 / 10)
+    } else {
+        interval_secs * 9 / 10
+    };
+
+    if window == 0 {
+        return 0;
+    }
+
+    // Simple deterministic hash: FNV-1a on the machine name bytes.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in machine_name.as_bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+
+    hash % window
+}
+
+// ---------------------------------------------------------------------------
 // Pure / testable logic
 // ---------------------------------------------------------------------------
 
@@ -665,5 +720,52 @@ mod tests {
     fn parse_status_empty_crontab() {
         let st = parse_status(&[]);
         assert!(!st.installed);
+    }
+
+    // ── compute_jitter ──────────────────────────────────────────────────────
+
+    #[test]
+    fn jitter_disabled_when_config_negative() {
+        assert_eq!(compute_jitter("cheerful-sparrow", "5m", -1), 0);
+    }
+
+    #[test]
+    fn jitter_zero_for_empty_machine_name() {
+        assert_eq!(compute_jitter("", "5m", 0), 0);
+    }
+
+    #[test]
+    fn jitter_auto_within_90_percent_of_interval() {
+        let j = compute_jitter("cheerful-sparrow", "5m", 0);
+        // 5m = 300s, 90% = 270s
+        assert!(j < 270, "jitter {j} must be < 270");
+    }
+
+    #[test]
+    fn jitter_capped_by_config_value() {
+        let j = compute_jitter("cheerful-sparrow", "5m", 30);
+        assert!(j < 30, "jitter {j} must be < 30");
+    }
+
+    #[test]
+    fn jitter_deterministic_for_same_machine() {
+        let a = compute_jitter("cheerful-sparrow", "5m", 0);
+        let b = compute_jitter("cheerful-sparrow", "5m", 0);
+        assert_eq!(a, b, "jitter must be deterministic");
+    }
+
+    #[test]
+    fn jitter_differs_across_machines() {
+        let a = compute_jitter("cheerful-sparrow", "5m", 0);
+        let b = compute_jitter("grumpy-walrus", "5m", 0);
+        // Could theoretically collide, but with FNV-1a and these names it won't.
+        assert_ne!(a, b, "different machines should get different jitter");
+    }
+
+    #[test]
+    fn jitter_cap_does_not_exceed_interval() {
+        // Config says 9999s but interval is only 60s — cap to 90% of 60 = 54.
+        let j = compute_jitter("test-machine", "1m", 9999);
+        assert!(j < 54, "jitter {j} must be < 54 (90% of 60s)");
     }
 }

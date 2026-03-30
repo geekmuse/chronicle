@@ -426,6 +426,20 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     let cfg = config::load(Some(config_path), &CliOverrides::default())
         .context("failed to load configuration")?;
 
+    // Jitter: when invoked by cron (--quiet), sleep a deterministic per-machine
+    // offset so that machines sharing the same cron interval don't all hit the
+    // remote simultaneously (thundering-herd avoidance).
+    if quiet && !dry_run {
+        let jitter = crate::scheduler::cron::compute_jitter(
+            &cfg.general.machine_name,
+            &cfg.general.sync_interval,
+            cfg.general.sync_jitter_secs,
+        );
+        if jitter > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(jitter));
+        }
+    }
+
     // L3 warning always goes to stderr (not suppressed by --quiet).
     if cfg.canonicalization.level >= 3 {
         eprintln!("{L3_WARNING}");
@@ -3330,7 +3344,7 @@ mod tests {
         claude_enabled: bool,
     ) {
         let toml = format!(
-            "[general]\nmachine_name = \"{machine_name}\"\n\n\
+            "[general]\nmachine_name = \"{machine_name}\"\nsync_jitter_secs = -1\n\n\
              [storage]\nrepo_path = \"{}\"\nremote_url = \"{}\"\n\n\
              [agents.pi]\nenabled = {pi_enabled}\nsession_dir = \"{}\"\n\n\
              [agents.claude]\nenabled = {claude_enabled}\nsession_dir = \"{}\"\n",

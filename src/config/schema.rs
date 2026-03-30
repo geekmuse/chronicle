@@ -52,6 +52,15 @@ pub struct GeneralConfig {
     /// Follow symlinks when scanning session directories.
     #[serde(default)]
     pub follow_symlinks: bool,
+
+    /// Maximum jitter (in seconds) added before a `--quiet` (cron) sync to
+    /// stagger machines that share the same cron interval.  Default is `0`,
+    /// which means *auto*: chronicle derives a per-machine offset from the
+    /// machine name and `sync_interval` so that no two machines with the
+    /// same interval fire at the same instant.  Set to an explicit value to
+    /// cap the jitter window, or `-1` to disable jitter entirely.
+    #[serde(default)]
+    pub sync_jitter_secs: i32,
 }
 
 impl Default for GeneralConfig {
@@ -61,6 +70,7 @@ impl Default for GeneralConfig {
             sync_interval: general_default_sync_interval(),
             log_level: general_default_log_level(),
             follow_symlinks: false,
+            sync_jitter_secs: 0,
         }
     }
 }

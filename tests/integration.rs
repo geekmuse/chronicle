@@ -36,7 +36,7 @@ fn write_machine_config(
         None => String::new(),
     };
     let toml = format!(
-        "[general]\nmachine_name = \"{machine_name}\"\n\n\
+        "[general]\nmachine_name = \"{machine_name}\"\nsync_jitter_secs = -1\n\n\
          [storage]\nrepo_path = \"{}\"\n{remote_line}\n\
          [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
          [agents.claude]\nenabled = false\nsession_dir = \"{}\"\n\n\
