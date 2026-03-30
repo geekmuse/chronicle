@@ -1,6 +1,6 @@
 ---
 date_created: 2026-03-29
-date_modified: 2026-03-29
+date_modified: 2026-03-30
 status: active
 audience: both
 cross_references:
@@ -10,7 +10,7 @@ cross_references:
   - AGENTS.md
 ---
 
-# Codebase Audit — Chronicle v0.2.2
+# Codebase Audit — Chronicle v0.2.2 (resolved in v0.3.0)
 
 Comprehensive audit covering: implementation drift, potential bugs,
 documentation issues, dead/unreachable code, and consistency issues.

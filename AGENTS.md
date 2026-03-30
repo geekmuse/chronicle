@@ -8,8 +8,8 @@
 - **Name:** chronicle
 - **Language:** Rust
 - **Purpose:** Synchronize Pi and Claude Code session history across machines where `$HOME` paths differ, using path canonicalization and Git as the storage/transport backend
-- **Current Version:** 0.2.2
-- **Status:** Stable (v0.2.2)
+- **Current Version:** 0.3.0
+- **Status:** Stable (v0.3.0)
 
 ## Quick Start — Quality Checks
 
@@ -71,7 +71,7 @@ chronicle/
 │   ├── references/                  # CLI reference, config reference
 │   ├── tasks/                       # Work items, backlogs
 │   └── research/                    # Spikes, investigations
-│       └── 001-codebase-audit.md    # v0.2.2 post-delivery codebase audit
+│       └── 001-codebase-audit.md    # v0.2.2 audit; resolved in v0.3.0
 ├── src/                             # Source code
 │   ├── lib.rs                       # Library root (exposes modules; used by tests)
 │   ├── main.rs                      # CLI entry point (clap)
