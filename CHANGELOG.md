@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Fixed
+
+### Changed
+
+## [0.4.0] - 2026-03-30
+
+### Added
 - **Sync jitter** — `chronicle sync --quiet` (cron mode) now sleeps a deterministic per-machine offset before starting the sync cycle, spreading machines uniformly across the cron interval to avoid thundering-herd push contention. Configurable via `general.sync_jitter_secs`: `0` (default) = auto, `> 0` = cap in seconds, `-1` = disable.
 
 ### Fixed
@@ -117,7 +125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project initialized
 
-[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.2...v0.2.3
