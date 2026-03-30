@@ -81,7 +81,7 @@ impl StateCache {
 
         let nanos = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
+            .map_or(0, |d| d.as_nanos());
         let tmp = parent.join(format!(".state.{}.{nanos}.tmp", std::process::id()));
 
         let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;

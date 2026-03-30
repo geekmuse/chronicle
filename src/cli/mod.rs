@@ -618,8 +618,9 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     //          Skipped when no remote URL is configured.
     // -----------------------------------------------------------------------
     if remote_url.is_some() {
-        let ring_buf =
-            errors::ring_buffer::RingBuffer::new(errors::ring_buffer::RingBuffer::default_path());
+        let ring_buf = errors::ring_buffer::RingBuffer::new(
+            errors::ring_buffer::RingBuffer::path_for_repo(&repo_path),
+        );
 
         match manager.fetch("origin") {
             Ok(()) => {}
@@ -901,8 +902,9 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         .context("failed to commit staged files")?;
 
     // Push with retry (§6.5).  On exhaustion, log to ring buffer and fail.
-    let ring_buf =
-        errors::ring_buffer::RingBuffer::new(errors::ring_buffer::RingBuffer::default_path());
+    let ring_buf = errors::ring_buffer::RingBuffer::new(
+        errors::ring_buffer::RingBuffer::path_for_repo(&repo_path),
+    );
     match manager.push_with_retry("origin", || Ok(()), std::thread::sleep) {
         Ok(()) => {
             println!(
@@ -1129,8 +1131,9 @@ pub fn pull_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         .context("failed to open git repository")?;
 
     // Step 1: Fetch from remote.
-    let ring_buf =
-        errors::ring_buffer::RingBuffer::new(errors::ring_buffer::RingBuffer::default_path());
+    let ring_buf = errors::ring_buffer::RingBuffer::new(
+        errors::ring_buffer::RingBuffer::path_for_repo(&repo_path),
+    );
     match manager.fetch("origin") {
         Ok(()) => {}
         Err(ref e) if git::is_network_error(e) => {
@@ -1665,7 +1668,7 @@ fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
     // --- Last sync time from manifest ---------------------------------------
     let repo_path = expand_home(&cfg.storage.repo_path, home);
     let last_sync_str = if repo_path.exists() {
-        match git::RepoManager::init_or_open(&repo_path, None, "main") {
+        match git::RepoManager::init_or_open(&repo_path, None, &cfg.storage.branch) {
             Ok(manager) => match manager.read_manifest() {
                 Ok(manifest) => {
                     if let Some(entry) = manifest.machines.get(&cfg.general.machine_name) {
@@ -3550,16 +3553,33 @@ mod tests {
     // US-018: status, errors, config
     // -----------------------------------------------------------------------
 
-    /// Write a minimal config for status/config tests.
+    /// Write a minimal config for status/config tests (defaults to branch = "main").
     fn write_status_config(
         config_path: &std::path::Path,
         repo_path: &std::path::Path,
         pi_session_dir: &std::path::Path,
         machine_name: &str,
     ) {
+        write_status_config_with_branch(
+            config_path,
+            repo_path,
+            pi_session_dir,
+            machine_name,
+            "main",
+        );
+    }
+
+    /// Write a minimal config for status/config tests with an explicit branch name.
+    fn write_status_config_with_branch(
+        config_path: &std::path::Path,
+        repo_path: &std::path::Path,
+        pi_session_dir: &std::path::Path,
+        machine_name: &str,
+        branch: &str,
+    ) {
         let toml = format!(
             "[general]\nmachine_name = \"{machine_name}\"\n\n\
-             [storage]\nrepo_path = \"{}\"\n\n\
+             [storage]\nrepo_path = \"{}\"\nbranch = \"{branch}\"\n\n\
              [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
              [agents.claude]\nenabled = false\n",
             repo_path.display(),
@@ -3642,6 +3662,36 @@ mod tests {
         write_status_config(&config_path, &repo_path, &pi_sessions, "sync-machine");
 
         // Should succeed; manifest entry should produce a formatted timestamp.
+        status_impl(&config_path, &home).unwrap();
+    }
+
+    #[test]
+    fn status_uses_configured_branch_not_main() {
+        // Regression test for H-1: status_impl must use cfg.storage.branch,
+        // not the hardcoded "main" literal.
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        // Init the repository on "chronicle" branch (not "main").
+        git::RepoManager::init_or_open(&repo_path, None, "chronicle")
+            .unwrap()
+            .ensure_working_tree()
+            .unwrap();
+
+        // Write config pointing at the same non-main branch.
+        write_status_config_with_branch(
+            &config_path,
+            &repo_path,
+            &pi_sessions,
+            "branch-machine",
+            "chronicle",
+        );
+
+        // status_impl must succeed; if it still hardcodes "main" it would
+        // either fail or produce wrong output on a repo with branch "chronicle".
         status_impl(&config_path, &home).unwrap();
     }
 

@@ -121,6 +121,18 @@ impl RingBuffer {
             .join("errors.jsonl")
     }
 
+    /// Return an `errors.jsonl` path co-located with `repo_path`.
+    ///
+    /// Placing the ring buffer next to the repository keeps it isolated to that
+    /// installation and avoids races when multiple tests each use a distinct
+    /// `storage.repo_path` tempdir.
+    ///
+    /// Path: `<repo_path>/../errors.jsonl` (sibling of the repo dir).
+    #[must_use]
+    pub fn path_for_repo(repo_path: &std::path::Path) -> PathBuf {
+        repo_path.parent().unwrap_or(repo_path).join("errors.jsonl")
+    }
+
     /// Append `entry` and rotate the buffer to at most [`RING_BUFFER_CAPACITY`]
     /// entries, dropping the oldest when the limit is exceeded.
     ///
