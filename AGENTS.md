@@ -71,7 +71,9 @@ chronicle/
 │   ├── references/                  # CLI reference, config reference
 │   ├── tasks/                       # Work items, backlogs
 │   └── research/                    # Spikes, investigations
-│       └── 001-codebase-audit.md    # v0.2.2 audit; resolved in v0.3.0
+│       ├── 001-codebase-audit.md    # v0.2.2 audit; resolved in v0.3.0
+│       ├── 002-sync-performance-investigation.md  # v0.4.x sync perf diagnosis; resolved in v0.4.2
+│       └── 003-sync-performance-validation.md     # Independent validation of 002 findings
 ├── src/                             # Source code
 │   ├── lib.rs                       # Library root (exposes modules; used by tests)
 │   ├── main.rs                      # CLI entry point (clap)
@@ -102,6 +104,7 @@ chronicle/
 │   ├── errors/                      # Error ring buffer
 │   │   ├── mod.rs
 │   │   └── ring_buffer.rs           # 30-entry error ring buffer (JSONL file)
+│   ├── materialize_cache.rs         # Materialization state cache (mtime/size, config hash)
 │   └── scan/                        # File change detection
 │       └── mod.rs                   # mtime/size-based change detection + state cache
 └── tests/
@@ -322,3 +325,5 @@ When investigating a tool, approach, or pattern:
 - [x] Error ring buffer
 - [x] Integration tests
 - [x] CI/CD pipeline
+- [x] Sync performance fixes (v0.4.1–v0.4.2): state cache population, conditional materialize,
+      `MaterializeCache` for O(1) re-materialize, advisory flock for concurrency safety

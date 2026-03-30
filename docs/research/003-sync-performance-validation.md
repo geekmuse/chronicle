@@ -2,7 +2,6 @@
 date_created: 2026-03-30
 date_modified: 2026-03-30
 status: active
-# Updated 2026-03-30: Gap 1 (pull_impl) and Gap 2 (concurrency) addressed in v0.4.2 (see below)
 audience: both
 cross_references:
   - docs/research/002-sync-performance-investigation.md
@@ -10,6 +9,7 @@ cross_references:
   - docs/001-architecture.md
   - src/cli/mod.rs
   - src/scan/mod.rs
+  - src/materialize_cache.rs
 ---
 
 # Validation: Sync Performance Investigation (002)
@@ -336,26 +336,25 @@ the change won't be materialized to local agent dirs unless remote changes
 also arrive. This is an extremely unlikely user action and not a practical
 concern.
 
-### Proposed Fix 3: Materialization state cache (not yet implemented)
+### Proposed Fix 3: Materialization state cache — ✅ IMPLEMENTED in v0.4.2 (US-002/003)
 
-**Verdict: ✅ Sound design, with implementation recommendations**
+**Verdict: ✅ Sound design, correctly implemented**
 
-The proposed approach (mtime/size cache for repo files, checked before
-reading in `materialize_agent_dir`) mirrors the proven `StateCache` pattern
-used for scan. Recommendations:
+Implemented as `src/materialize_cache.rs` (`MaterializeCache`). Key design
+decisions that matched the recommendations:
 
-1. **Location:** Use `StateCache::path_for_repo` pattern (sibling of repo
-   dir), NOT a global `~/.local/share/chronicle/` path.
-2. **Key:** Use repo-relative path (e.g., `pi/sessions/--foo--/s.jsonl`),
-   not absolute path, since repo files have stable relative paths.
-3. **Scope:** Add it as a second field in the existing `StateCache` struct
-   or as a co-located `materialize-state.json` file. A separate file avoids
-   changing the existing cache format.
-4. **Cache invalidation:** Invalidate when the de-canonicalization config
-   changes (e.g., `canonicalization.level` or `home_token` changes). This
-   isn't mentioned in the investigation but is important — if the token
-   changes, all files need re-materialization even if repo mtime is
-   unchanged.
+1. **Location:** `<repo-parent>/materialize-state.json` — co-located with
+   `state.json`, not a global `~/.local/share/chronicle/` path.
+2. **Key:** Repo-relative path (e.g., `pi/sessions/--foo--/s.jsonl`) — stable
+   across machines and home-directory changes.
+3. **Scope:** Separate file with its own schema (`MaterializeFileState` with
+   `repo_mtime` + `repo_size`, plus a top-level `config_hash`) — avoids
+   changing the scan `StateCache` format.
+4. **Cache invalidation:** `config_hash` field (SHA-256-like hash of
+   `canonicalization.level` + `home_token`) — the cache is cleared
+   automatically when either field changes, ensuring all files are
+   re-materialized after a config change. This was flagged as missing from
+   the investigation and was implemented.
 
 ---
 
@@ -369,7 +368,7 @@ used for scan. Recommendations:
 | Performance numbers | ⚠️ Plausible | Wall-clock observations, not formal benchmarks |
 | Proposed Fix #1 (cache population) | ✅ Sound | No regressions, well-tested |
 | Proposed Fix #2 (conditional materialize) | ✅ Sound | Minor stale comment to clean up |
-| Proposed Fix #3 (materialize cache) | ✅ Sound design | Needs cache-invalidation strategy |
+| Proposed Fix #3 (materialize cache) | ✅ Implemented in v0.4.2 | `MaterializeCache` with config-hash invalidation |
 
 **Gaps identified:**
 

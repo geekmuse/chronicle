@@ -2,13 +2,14 @@
 date_created: 2026-03-30
 date_modified: 2026-03-30
 status: active
-# Updated 2026-03-30: Remaining issue (materialize cache) fixed in v0.4.2 (see below)
 audience: agent
 cross_references:
   - docs/research/001-codebase-audit.md
   - docs/001-architecture.md
+  - docs/research/003-sync-performance-validation.md
   - src/cli/mod.rs
   - src/scan/mod.rs
+  - src/materialize_cache.rs
 ---
 
 # Research: Sync Performance Investigation

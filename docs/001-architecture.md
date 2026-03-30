@@ -45,7 +45,8 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 | Git | Repo init, fetch, push with retry, commit formatting, SSH/HTTPS credential callbacks | `src/git/` |
 | Agents | Pi and Claude-specific directory encoding and file naming | `src/agents/` |
 | Scheduler | Crontab installation and management | `src/scheduler/` |
-| Scan | File change detection via mtime/size cache | `src/scan/` |
+| Scan | File change detection via mtime/size cache (`state.json`) | `src/scan/` |
+| MaterializeCache | Repo-file mtime/size cache for materialize fast-path; invalidated on config change (`materialize-state.json`) | `src/materialize_cache.rs` |
 | Errors | Ring buffer (30 entries) for structured error logging | `src/errors/` |
 
 ## Data Flow
@@ -63,8 +64,9 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 1. Git module fetches from remote
 2. Merger resolves any divergent entries (set-union, remote-wins for conflicts)
 3. Partial history filter limits materialization to N most recent files per directory
-4. De-canonicalizer replaces `{{SYNC_HOME}}` with local `$HOME`
-5. Files written to agent session directories with preserved permissions
+4. `MaterializeCache` skips repo files whose mtime/size match the last-materialized state
+5. De-canonicalizer replaces `{{SYNC_HOME}}` with local `$HOME`
+6. Files written to agent session directories with preserved permissions
 
 ## Key Design Decisions
 
@@ -95,6 +97,7 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 | `thiserror` / `anyhow` | Error types | latest |
 | `uuid` | Session UUID generation | latest |
 | `rand` | Machine name generation | latest |
+| `libc` | Advisory `flock` for concurrent sync protection (Unix only) | latest |
 
 ### Development
 
