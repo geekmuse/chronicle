@@ -1952,9 +1952,15 @@ fn set_config_value(cfg: &mut config::Config, key: &str, value: &str) -> Result<
         // [canonicalization]
         "canonicalization.home_token" => cfg.canonicalization.home_token = value.to_owned(),
         "canonicalization.level" => {
-            cfg.canonicalization.level = value
+            let level = value
                 .parse::<u8>()
                 .map_err(|_| anyhow::anyhow!("expected a number 1–3, got: {value}"))?;
+            if !(1..=3).contains(&level) {
+                return Err(anyhow::anyhow!(
+                    "canonicalization.level must be 1, 2, or 3, got: {value}"
+                ));
+            }
+            cfg.canonicalization.level = level;
         }
         // [agents.pi]
         "agents.pi.enabled" => {
@@ -3810,6 +3816,79 @@ mod tests {
         assert_eq!(
             cfg.sync.history_mode,
             crate::config::schema::HistoryMode::Full
+        );
+    }
+
+    // --- canonicalization.level range validation ----------------------------
+
+    /// Helper: run config set canonicalization.level = <value>.
+    fn set_canon_level(config_path: &std::path::Path, value: &str) -> Result<()> {
+        config_impl(
+            Some("canonicalization.level".to_owned()),
+            Some(value.to_owned()),
+            config_path,
+        )
+    }
+
+    #[test]
+    fn config_set_level_0_rejected() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        assert!(
+            set_canon_level(&config_path, "0").is_err(),
+            "level 0 should be rejected"
+        );
+    }
+
+    #[test]
+    fn config_set_level_1_accepted() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        set_canon_level(&config_path, "1").expect("level 1 should be valid");
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.canonicalization.level, 1);
+    }
+
+    #[test]
+    fn config_set_level_2_accepted() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        set_canon_level(&config_path, "2").expect("level 2 should be valid");
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.canonicalization.level, 2);
+    }
+
+    #[test]
+    fn config_set_level_3_accepted() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        set_canon_level(&config_path, "3").expect("level 3 should be valid");
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.canonicalization.level, 3);
+    }
+
+    #[test]
+    fn config_set_level_4_rejected() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        write_minimal_config(&config_path, &repo_path);
+
+        assert!(
+            set_canon_level(&config_path, "4").is_err(),
+            "level 4 should be rejected"
         );
     }
 }
