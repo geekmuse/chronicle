@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.4] - 2026-03-30
 
 ### Fixed
-- **macOS cron SSH agent discovery** — `launchctl getenv SSH_AUTH_SOCK` returns empty from cron's system bootstrap context; replaced with `launchctl asuser $(id -u) launchctl getenv SSH_AUTH_SOCK` which correctly queries the user's GUI session
+- **macOS cron SSH agent discovery** — neither `launchctl getenv` nor `launchctl asuser` can reach the user's GUI session from cron's system bootstrap context; replaced with a `find` scan of `/private/tmp/com.apple.launchd.*/Listeners` filtered by socket type and ownership, which reliably discovers the launchd-managed SSH agent socket
 
 ## [0.2.3] - 2026-03-30
 
