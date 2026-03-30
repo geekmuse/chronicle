@@ -33,6 +33,7 @@ pub mod cli;
 pub mod config;
 pub mod errors;
 pub mod git;
+pub mod materialize_cache;
 pub mod merge;
 pub mod scan;
 pub mod scheduler;

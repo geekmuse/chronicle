@@ -1,8 +1,38 @@
 ## Codebase Patterns
-- Add reusable, project-wide implementation patterns here.
+- `sync_impl` and `pull_impl` both have a fast-path guard: skip
+  `materialize_repo_to_local` when `integrate_remote_changes` returns 0.
+  Always mirror this guard in both functions when touching materialize logic.
+- Tests that call `pull_impl` (non-dry-run, with remote) need a bare git repo
+  created with `git2::RepositoryInitOptions::bare(true)` and `write_push_config`.
+  The repo can then be pre-populated by calling
+  `git::RepoManager::init_or_open` + manual fs writes before invoking pull_impl.
+- `integrate_remote_changes` returns 0 immediately when the remote tracking
+  ref (`refs/remotes/origin/<branch>`) does not exist (empty remote).
 ---
 
 ## PRD Run Context
 PRD Branch: ralph/sync-perf-remaining
 Started: 2026-03-30T12:55:26.346Z
+---
+
+## 2026-03-30 - US-001
+Session: N/A
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Applied conditional materialize fast-path to pull_impl (mirrors sync_impl guard)
+- Changed unconditional `materialize_repo_to_local` call to `if integrated > 0` guard
+- Added "[pull] Nothing to materialize — no remote changes arrived." message for 0 case
+- Added unit test `pull_skips_materialize_when_no_remote_changes`:
+  - Sets up a bare empty remote (no commits → integrate_remote_changes returns 0)
+  - Plants a canonical session file in the local repo working tree
+  - Calls pull_impl; asserts local pi_sessions dir remains empty
+- Files changed: src/cli/mod.rs
+- Commit: 5181344
+- **Learnings for future iterations:**
+  - `integrate_remote_changes` returns 0 immediately when `refs/remotes/origin/<branch>` doesn't exist
+  - pull tests with a real remote need `write_push_config` + a bare repo init
+  - `git::RepoManager::init_or_open` is accessible from test scope via `use super::*`
+  - The pre-commit hook runs `ralphi check` which runs all quality checks in sequence
 ---

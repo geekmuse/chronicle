@@ -15,12 +15,12 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 1,
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [],
       "notes": "Quick win — mirrors the sync_impl fix from commit eb248c0. Located in src/cli/mod.rs pull_impl function.",
       "startedAt": "2026-03-30T12:55:26.409Z",
-      "updatedAt": "2026-03-30T12:55:26.409Z",
-      "completedAt": null
+      "updatedAt": "2026-03-30T13:00:00.000Z",
+      "completedAt": "2026-03-30T13:00:00.000Z"
     },
     {
       "id": "US-002",
