@@ -35,9 +35,12 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 2,
-      "status": "open",
+      "status": "done",
       "dependsOn": [],
-      "notes": "Schema/persistence layer only — wiring into materialize_agent_dir is US-003. Keep the struct simple; mirror StateCache patterns exactly."
+      "notes": "Schema/persistence layer only — wiring into materialize_agent_dir is US-003. Keep the struct simple; mirror StateCache patterns exactly.",
+      "startedAt": "2026-03-30T13:04:32.915Z",
+      "updatedAt": "2026-03-30T13:20:00.000Z",
+      "completedAt": "2026-03-30T13:20:00.000Z"
     },
     {
       "id": "US-003",

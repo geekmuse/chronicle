@@ -8,6 +8,13 @@
   `git::RepoManager::init_or_open` + manual fs writes before invoking pull_impl.
 - `integrate_remote_changes` returns 0 immediately when the remote tracking
   ref (`refs/remotes/origin/<branch>`) does not exist (empty remote).
+- Cache structs (`StateCache`, `MaterializeCache`) live in separate modules and
+  share the same API: `load(path)`, `save(path)`, `path_for_repo(repo_path)`.
+  `path_for_repo` always returns a sibling of the repo directory (one level up).
+  Atomic write uses `.mcache.<pid>.<nanos>.tmp` then `fs::rename` — copy this
+  pattern exactly for any new cache types.
+- The pre-commit hook (`ralphi check`) takes ~60s; use a 180s bash timeout when
+  committing from within an agent session.
 ---
 
 ## PRD Run Context
@@ -35,4 +42,29 @@ Corrective Plan: N/A
   - pull tests with a real remote need `write_push_config` + a bare repo init
   - `git::RepoManager::init_or_open` is accessible from test scope via `use super::*`
   - The pre-commit hook runs `ralphi check` which runs all quality checks in sequence
+---
+
+## 2026-03-30 - US-002
+Session: N/A
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Created src/materialize_cache.rs with MaterializeFileState and MaterializeCache structs
+- MaterializeFileState: { repo_mtime: DateTime<Utc>, repo_size: u64 }
+- MaterializeCache: { files: HashMap<String, MaterializeFileState>, config_hash: String }
+- Implemented load/save/path_for_repo mirroring StateCache patterns exactly
+- path_for_repo returns <repo>/../materialize-state.json (sibling of repo dir)
+- Atomic save via .mcache.<pid>.<nanos>.tmp + fs::rename
+- config_hash field with #[serde(default)] for cache invalidation (US-003)
+- Registered pub mod materialize_cache in src/lib.rs
+- 6 unit tests: load missing, round-trip, parent creation, path_for_repo suffix, root fallback, default config_hash
+- Files changed: src/materialize_cache.rs (new), src/lib.rs
+- Commit: 697682d
+- **Learnings for future iterations:**
+  - `#[serde(default)]` is needed on `config_hash` so existing JSON without that field
+    deserializes cleanly (backward-compatible schema evolution)
+  - Place cache in its own module (not appended to scan/mod.rs) to keep files focused
+  - US-003 will wire this into materialize_agent_dir; the cache key should be the
+    repo-relative path string (same as StateCache keys)
 ---
