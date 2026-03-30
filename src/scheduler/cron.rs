@@ -129,12 +129,15 @@ pub fn filter_marker_lines(lines: &[String]) -> Vec<String> {
 /// `ssh_key_from_agent()` credential callback can reach the user's SSH agent
 /// from within a cron job (which runs in a minimal environment).
 ///
-/// - **macOS:** `launchctl getenv SSH_AUTH_SOCK` returns the socket path
-///   registered by the system launch agent.
+/// - **macOS:** `launchctl asuser <uid> launchctl getenv SSH_AUTH_SOCK`
+///   queries the user's GUI bootstrap context — necessary because cron runs
+///   in the system/daemon bootstrap context where `launchctl getenv` alone
+///   returns nothing.
 /// - **Linux:** Falls back to the well-known systemd user socket at
 ///   `/run/user/<uid>/ssh-agent.socket` when `SSH_AUTH_SOCK` is unset.
 #[cfg(target_os = "macos")]
-const SSH_AGENT_ENV: &str = "SSH_AUTH_SOCK=$(launchctl getenv SSH_AUTH_SOCK 2>/dev/null) ";
+const SSH_AGENT_ENV: &str =
+    "SSH_AUTH_SOCK=$(launchctl asuser $(id -u) launchctl getenv SSH_AUTH_SOCK 2>/dev/null) ";
 
 #[cfg(not(target_os = "macos"))]
 const SSH_AGENT_ENV: &str =

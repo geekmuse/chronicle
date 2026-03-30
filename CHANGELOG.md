@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.2.4] - 2026-03-30
+
+### Fixed
+- **macOS cron SSH agent discovery** — `launchctl getenv SSH_AUTH_SOCK` returns empty from cron's system bootstrap context; replaced with `launchctl asuser $(id -u) launchctl getenv SSH_AUTH_SOCK` which correctly queries the user's GUI session
+
 ## [0.2.3] - 2026-03-30
 
 ### Fixed
@@ -75,7 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project initialized
 
-[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/YOUR_USERNAME/chronicle/compare/v0.2.0...v0.2.1

@@ -628,11 +628,11 @@ Chronicle uses cron for scheduling on both macOS and Linux. `chronicle sync` is 
 `chronicle schedule install` writes two entries to the user's crontab:
 
 ```crontab
-@reboot SSH_AUTH_SOCK=$(launchctl getenv SSH_AUTH_SOCK 2>/dev/null) /usr/local/bin/chronicle sync --quiet  # chronicle-sync
-*/5 * * * * SSH_AUTH_SOCK=$(launchctl getenv SSH_AUTH_SOCK 2>/dev/null) /usr/local/bin/chronicle sync --quiet  # chronicle-sync
+@reboot SSH_AUTH_SOCK=$(launchctl asuser $(id -u) launchctl getenv SSH_AUTH_SOCK 2>/dev/null) /usr/local/bin/chronicle sync --quiet  # chronicle-sync
+*/5 * * * * SSH_AUTH_SOCK=$(launchctl asuser $(id -u) launchctl getenv SSH_AUTH_SOCK 2>/dev/null) /usr/local/bin/chronicle sync --quiet  # chronicle-sync
 ```
 
-Each entry is prefixed with an `SSH_AUTH_SOCK` discovery snippet so that the `ssh_key_from_agent()` credential callback can reach the user's SSH agent from the minimal cron environment. On macOS this uses `launchctl getenv`; on Linux it falls back to the systemd user socket at `/run/user/<uid>/ssh-agent.socket`.
+Each entry is prefixed with an `SSH_AUTH_SOCK` discovery snippet so that the `ssh_key_from_agent()` credential callback can reach the user's SSH agent from the minimal cron environment. On macOS this uses `launchctl asuser <uid> launchctl getenv` (the `asuser` is required because cron runs in the system bootstrap context, not the user's GUI session); on Linux it falls back to the systemd user socket at `/run/user/<uid>/ssh-agent.socket`.
 
 The `# chronicle-sync` comment marker allows `chronicle schedule uninstall` and `chronicle schedule status` to reliably identify and manage these entries without touching other crontab lines.
 
