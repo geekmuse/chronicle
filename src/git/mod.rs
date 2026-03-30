@@ -3,7 +3,6 @@
 // US-010: init/open, working tree, manifest.
 // US-011: fetch/push with exponential-backoff retry (fetch_push.rs).
 // US-012: staging and commit formatting.
-#![allow(dead_code)]
 
 mod commit;
 mod fetch_push;

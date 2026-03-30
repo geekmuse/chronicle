@@ -1,7 +1,3 @@
-// Items in this module will be used by the sync pipeline (US-017) and import
-// command (US-014). Allow dead-code until those stories wire it in.
-#![allow(dead_code)]
-
 //! L2 whitelisted JSON field path walker.
 //!
 //! Defines the set of JSON field paths that are canonicalized at level 2, and

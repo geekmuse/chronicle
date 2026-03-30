@@ -1,6 +1,3 @@
-// Dead-code allowed: `generate` is called by US-013 (chronicle init).
-#![allow(dead_code)]
-
 use rand::seq::SliceRandom as _;
 
 /// Curated adjective word list for machine name generation.

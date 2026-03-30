@@ -1,7 +1,5 @@
 // Grow-only set merge algorithm for JSONL session files (§5.2).
 // Items here are consumed by the full sync pipeline (US-015/US-017).
-// Allow dead-code until those callers are wired in.
-#![allow(dead_code)]
 //
 // This module implements all five steps of §5.2:
 //   1. Parse both files into entry sets

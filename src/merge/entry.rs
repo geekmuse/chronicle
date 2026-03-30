@@ -1,8 +1,6 @@
 // Entry identity and parsing for JSONL session files (§5.1).
 // Items here are foundational types consumed by set_union.rs (US-006),
 // prefix verification (US-007), and the full sync pipeline (US-015/US-017).
-// Allow dead-code until those callers are wired in.
-#![allow(dead_code)]
 // This module is the foundation for the grow-only set merge algorithm in
 // set_union.rs and the prefix verification in US-007.
 

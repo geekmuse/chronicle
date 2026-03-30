@@ -1,7 +1,3 @@
-// Dead-code allowed: schema types are foundational for US-013 (init),
-// US-018 (config command), and all commands that load config.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

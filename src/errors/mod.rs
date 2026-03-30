@@ -1,7 +1,3 @@
-// ChronicleError variants are wired into callers progressively across stories.
-// Allow dead-code until US-015/US-017/US-018 complete the wiring.
-#![allow(dead_code)]
-
 pub mod ring_buffer;
 
 /// All error categories that Chronicle can produce.

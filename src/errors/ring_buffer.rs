@@ -1,7 +1,3 @@
-// Items in this module are fully wired by US-015/US-017/US-018 (sync and CLI
-// commands). Allow dead-code until those stories call append() and read().
-#![allow(dead_code)]
-
 //! 30-entry error ring buffer stored as JSONL (§11.1).
 //!
 //! All mutating operations are atomic: entries are serialized to a temporary

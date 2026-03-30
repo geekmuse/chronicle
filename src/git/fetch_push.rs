@@ -1,6 +1,5 @@
 // Git fetch, push, and push-with-retry logic (§6.5).
 // US-011 implements this module.
-#![allow(dead_code)]
 
 use std::time::Duration;
 

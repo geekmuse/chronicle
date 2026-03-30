@@ -1,7 +1,3 @@
-// Dead-code allowed: config loading is wired into commands by US-013 (init),
-// US-017 (sync), US-018 (config/status), etc.
-#![allow(dead_code)]
-
 pub mod machine_name;
 pub mod schema;
 

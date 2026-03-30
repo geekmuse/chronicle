@@ -1,8 +1,3 @@
-// Items in this module are used by the canonicalization and CLI layers
-// (US-004, US-013, US-014). Allow dead-code on the structs/trait until those
-// stories are wired in.
-#![allow(dead_code)]
-
 //! Agent-specific directory encoding and decoding.
 //!
 //! Pi and Claude Code store their session files under directories whose names

@@ -1,6 +1,3 @@
-// Dead-code allowed: scanner is wired into the sync pipeline in US-017.
-#![allow(dead_code)]
-
 //! File change detection via mtime/size comparison against a persisted
 //! state cache (`state.json`) — §14.1.
 //!

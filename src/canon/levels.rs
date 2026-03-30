@@ -1,7 +1,3 @@
-// Items in this module will be used by the sync pipeline (US-017) and import
-// command (US-014). Allow dead-code until those stories wire it in.
-#![allow(dead_code)]
-
 //! L1/L2/L3 canonicalization dispatch for JSONL content lines.
 //!
 //! L1 (directory names) is handled at the filesystem layer; this module
