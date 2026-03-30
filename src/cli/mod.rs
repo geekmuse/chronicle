@@ -634,7 +634,9 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     // Phase 2: Git exchange — fetch, integrate remote changes, push.
     //          Skipped when no remote URL is configured.
     // -----------------------------------------------------------------------
-    if remote_url.is_some() {
+    // remote_integrated is exposed to Phase 3 so materialize can be skipped
+    // when nothing arrived from the remote this cycle.
+    let remote_integrated: usize = if remote_url.is_some() {
         let ring_buf = errors::ring_buffer::RingBuffer::new(
             errors::ring_buffer::RingBuffer::path_for_repo(&repo_path),
         );
@@ -679,18 +681,39 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
         } else if !quiet {
             println!("[git]      No local commits yet — skipping push.");
         }
-    } else if !quiet {
-        println!("[git]      No remote configured — skipping fetch/push.");
-    }
+        integrated
+    } else {
+        if !quiet {
+            println!("[git]      No remote configured — skipping fetch/push.");
+        }
+        0
+    };
 
     // -----------------------------------------------------------------------
-    // Phase 3: Incoming — materialize repo working tree → local agent dirs.
+    // Phase 3: Incoming — materialize repo working tree -> local agent dirs.
+    //
+    // Fast path: skip the full 1.7 GB repo scan when nothing arrived from the
+    // remote AND no outgoing files were committed this cycle.  Materialize
+    // still runs when remote_integrated > 0 (new remote content) or when
+    // outgoing_count > 0 (we just committed, so we should reflect that
+    // back to local dirs).
     // -----------------------------------------------------------------------
-    let materialized = materialize_repo_to_local(&repo_path, &cfg, home, &registry)
-        .context("failed to materialize session files")?;
+    // Only materialize when remote content actually arrived — outgoing files
+    // came FROM local and are already there, so an outgoing-only cycle needs
+    // no materialization pass.
+    let materialized = if remote_integrated > 0 {
+        materialize_repo_to_local(&repo_path, &cfg, home, &registry)
+            .context("failed to materialize session files")?
+    } else {
+        0
+    };
 
     if !quiet {
-        println!("[incoming] Materialized {materialized} file(s) to local agent dirs.");
+        if materialized > 0 {
+            println!("[incoming] Materialized {materialized} file(s) to local agent dirs.");
+        } else {
+            println!("[incoming] Nothing to materialize.");
+        }
     }
 
     // -----------------------------------------------------------------------
