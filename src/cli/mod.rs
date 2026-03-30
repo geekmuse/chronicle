@@ -11,6 +11,7 @@ use crate::canon::TokenRegistry;
 use crate::config::{self, schema::HistoryMode, CliOverrides};
 use crate::errors;
 use crate::git;
+use crate::materialize_cache::{MaterializeCache, MaterializeFileState};
 use crate::merge::set_union::{merge_jsonl, NullReporter};
 use crate::scan;
 use crate::scheduler::cron as scheduler_cron;
@@ -1427,6 +1428,10 @@ impl MaterializeFilter {
 /// De-canonicalize all JSONL files in the repo working tree and write them
 /// to the local agent session directories (materialization — §14 step 5).
 ///
+/// Loads and saves [`MaterializeCache`] to skip repo files whose mtime/size
+/// have not changed since the previous pass.  The cache is invalidated
+/// automatically when the canonicalization configuration changes.
+///
 /// Returns the total number of files written.
 fn materialize_repo_to_local(
     repo_path: &Path,
@@ -1434,6 +1439,21 @@ fn materialize_repo_to_local(
     home: &Path,
     registry: &TokenRegistry,
 ) -> Result<usize> {
+    // Load the materialize cache (empty if not found).
+    let cache_path = MaterializeCache::path_for_repo(repo_path);
+    let mut cache =
+        MaterializeCache::load(&cache_path).context("failed to load materialize cache")?;
+
+    // Invalidate the cache when the canonicalization config has changed.
+    let config_hash = format!(
+        "{}:{}",
+        cfg.canonicalization.level, cfg.canonicalization.home_token
+    );
+    if cache.config_hash != config_hash {
+        cache.files.clear();
+        cache.config_hash = config_hash;
+    }
+
     let filter = MaterializeFilter::from_config(cfg);
     let mut total = 0usize;
 
@@ -1441,9 +1461,16 @@ fn materialize_repo_to_local(
         let pi_sessions_repo = repo_path.join("pi").join("sessions");
         if pi_sessions_repo.exists() {
             let local_pi_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
-            total +=
-                materialize_agent_dir(&pi_sessions_repo, &local_pi_dir, registry, true, &filter)
-                    .context("Pi session materialization failed")?;
+            total += materialize_agent_dir(
+                &pi_sessions_repo,
+                &local_pi_dir,
+                registry,
+                true,
+                &filter,
+                &mut cache,
+                "pi/sessions",
+            )
+            .context("Pi session materialization failed")?;
         }
     }
 
@@ -1458,10 +1485,17 @@ fn materialize_repo_to_local(
                 registry,
                 false,
                 &filter,
+                &mut cache,
+                "claude/projects",
             )
             .context("Claude project materialization failed")?;
         }
     }
+
+    // Persist the materialize cache after a successful pass.
+    cache
+        .save(&cache_path)
+        .context("failed to save materialize cache")?;
 
     Ok(total)
 }
@@ -1563,6 +1597,10 @@ fn select_partial_session_files(
 /// session files per subdirectory are written.  Existing local files outside
 /// the window are left untouched (§7.2 — no deletion propagation).
 ///
+/// `cache` is used to skip repo files whose mtime/size match the last
+/// materialization pass.  `repo_rel_base` is the repo-relative prefix for
+/// forming cache keys (e.g. `"pi/sessions"`).
+///
 /// Returns the number of files written.
 fn materialize_agent_dir(
     repo_agent_dir: &Path,
@@ -1570,6 +1608,8 @@ fn materialize_agent_dir(
     registry: &TokenRegistry,
     is_pi: bool,
     filter: &MaterializeFilter,
+    cache: &mut MaterializeCache,
+    repo_rel_base: &str,
 ) -> Result<usize> {
     let mut total = 0usize;
 
@@ -1646,6 +1686,30 @@ fn materialize_agent_dir(
 
             let local_file_path = local_session_dir.join(filename);
 
+            // Stat the repo file for the materialize cache check.
+            let meta = match fs::metadata(file_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("  Warning: cannot stat {}: {e}", file_path.display());
+                    continue;
+                }
+            };
+            let repo_size = meta.len();
+            let repo_mtime: DateTime<Utc> = match meta.modified() {
+                Ok(st) => DateTime::<Utc>::from(st),
+                Err(_) => DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH),
+            };
+
+            // Cache key: "<repo_rel_base>/<canonical_dir>/<filename>"
+            let cache_key = format!("{repo_rel_base}/{canonical_dir_name}/{filename}");
+
+            // Cache hit: repo file unchanged since last materialize pass → skip entirely.
+            if let Some(cached) = cache.files.get(&cache_key) {
+                if cached.repo_mtime == repo_mtime && cached.repo_size == repo_size {
+                    continue;
+                }
+            }
+
             let raw = match fs::read_to_string(file_path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -1681,6 +1745,14 @@ fn materialize_agent_dir(
             if local_file_path.exists() {
                 if let Ok(existing) = fs::read_to_string(&local_file_path) {
                     if existing == decanon_content {
+                        // Content unchanged — update cache so the next pass skips this file.
+                        cache.files.insert(
+                            cache_key,
+                            MaterializeFileState {
+                                repo_mtime,
+                                repo_size,
+                            },
+                        );
                         continue;
                     }
                 }
@@ -1688,6 +1760,15 @@ fn materialize_agent_dir(
 
             // Write file, preserving existing permissions (§11.5).
             write_preserving_permissions(&local_file_path, &decanon_content)?;
+
+            // Update cache entry after a successful write.
+            cache.files.insert(
+                cache_key,
+                MaterializeFileState {
+                    repo_mtime,
+                    repo_size,
+                },
+            );
             total += 1;
         }
     }
@@ -2156,6 +2237,7 @@ pub fn handle_schedule_status() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materialize_cache::MaterializeCache;
     use tempfile::TempDir;
 
     /// Core init logic extracted for testability (avoids touching real home dir).
@@ -3381,12 +3463,15 @@ mod tests {
         let home = dir.path().to_path_buf();
         let registry = TokenRegistry::from_config(&CanonicalizationConfig::default(), &home);
 
+        let mut cache = MaterializeCache::default();
         let count = materialize_agent_dir(
             &repo_agent_dir,
             &local_base,
             &registry,
             true,
             &MaterializeFilter::Full,
+            &mut cache,
+            "pi/sessions",
         )
         .unwrap();
 
@@ -3421,12 +3506,15 @@ mod tests {
         let home = dir.path().to_path_buf();
         let registry = TokenRegistry::from_config(&CanonicalizationConfig::default(), &home);
 
+        let mut cache = MaterializeCache::default();
         let count = materialize_agent_dir(
             &repo_agent_dir,
             &local_base,
             &registry,
             true,
             &MaterializeFilter::Partial(2),
+            &mut cache,
+            "pi/sessions",
         )
         .unwrap();
 
@@ -3767,12 +3855,15 @@ mod tests {
         let registry = TokenRegistry::from_config(&CanonicalizationConfig::default(), &home);
 
         // Partial window = 1 (only the new file should be written).
+        let mut cache = MaterializeCache::default();
         materialize_agent_dir(
             &repo_agent_dir,
             &local_base,
             &registry,
             true,
             &MaterializeFilter::Partial(1),
+            &mut cache,
+            "pi/sessions",
         )
         .unwrap();
 
@@ -4173,6 +4264,66 @@ mod tests {
         assert!(
             set_canon_level(&config_path, "4").is_err(),
             "level 4 should be rejected"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // US-003: MaterializeCache skips unchanged repo files
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn materialize_cache_skips_unchanged_files_on_second_call() {
+        let dir = TempDir::new().unwrap();
+        let home = dir.path().to_path_buf();
+
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let config_path = dir.path().join("config.toml");
+
+        // Plant a canonical session file in the repo working tree.
+        // Using a dir name with no {{SYNC_HOME}} token so decanonicalization
+        // is a no-op and the local path is predictable.
+        let canonical_dir = repo_path
+            .join("pi")
+            .join("sessions")
+            .join("--Users-testuser-Dev-proj--");
+        std::fs::create_dir_all(&canonical_dir).unwrap();
+        std::fs::write(
+            canonical_dir.join("session.jsonl"),
+            b"{\"type\":\"session\",\"id\":\"1\"}\n",
+        )
+        .unwrap();
+
+        let toml = format!(
+            "[general]\nmachine_name = \"cache-test\"\n\n\
+             [storage]\nrepo_path = \"{}\"\n\n\
+             [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
+             [agents.claude]\nenabled = false\n",
+            repo_path.display(),
+            pi_sessions.display(),
+        );
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, toml.as_bytes()).unwrap();
+
+        let cfg = config::load(Some(&config_path), &CliOverrides::default()).unwrap();
+        let registry = TokenRegistry::from_config(&cfg.canonicalization, &home);
+
+        // First call: file is new → must be written → count = 1.
+        let count1 = materialize_repo_to_local(&repo_path, &cfg, &home, &registry).unwrap();
+        assert_eq!(count1, 1, "first materialize call should write 1 file");
+
+        // Second call: repo file mtime/size unchanged → cache hit → count = 0.
+        let count2 = materialize_repo_to_local(&repo_path, &cfg, &home, &registry).unwrap();
+        assert_eq!(
+            count2, 0,
+            "second materialize call with unchanged repo file should produce 0 (cache hit)"
+        );
+
+        // Verify the cache file was persisted.
+        let cache_path = MaterializeCache::path_for_repo(&repo_path);
+        assert!(
+            cache_path.exists(),
+            "materialize-state.json must be persisted after first call"
         );
     }
 }
