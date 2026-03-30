@@ -10,25 +10,26 @@ use super::{GitError, RepoManager, PUSH_BACKOFF_SECS};
 // SSH credentials helper
 // ---------------------------------------------------------------------------
 
-/// Build a [`git2::RemoteCallbacks`] that handles SSH authentication.
+/// Build a [`git2::RemoteCallbacks`] that handles SSH and HTTPS authentication.
 ///
 /// Strategy (tried in order):
-/// 1. SSH agent — works when `ssh-agent` is running and has the key loaded,
+/// 1. SSH agent - works when `ssh-agent` is running and has the key loaded,
 ///    which is the normal case on macOS (Keychain) and Linux (ssh-agent).
-/// 2. Default key files — `~/.ssh/id_ed25519`, `~/.ssh/id_ecdsa`,
+/// 2. Default key files - `~/.ssh/id_ed25519`, `~/.ssh/id_ecdsa`,
 ///    `~/.ssh/id_rsa` (tried in order, first existing file wins).
+/// 3. HTTPS remotes - delegates to the system git credential helper.
 ///
 /// libgit2 does NOT read `~/.ssh/config` or use the system SSH binary, so
 /// this callback is required for any SSH remote URL.
 ///
 /// The `called` flag prevents the infinite-retry loop that libgit2 triggers
-/// when credentials are accepted by the callback but rejected by the server —
+/// when credentials are accepted by the callback but rejected by the server -
 /// returning an error on the second invocation surfaces the real failure.
 fn make_auth_callbacks<'cb>() -> git2::RemoteCallbacks<'cb> {
     let mut callbacks = git2::RemoteCallbacks::new();
     let mut called = false;
 
-    callbacks.credentials(move |_url, username_from_url, allowed_types| {
+    callbacks.credentials(move |url, username_from_url, allowed_types| {
         if called {
             return Err(git2::Error::from_str(
                 "SSH authentication failed (credentials rejected by server)",
@@ -58,8 +59,15 @@ fn make_auth_callbacks<'cb>() -> git2::RemoteCallbacks<'cb> {
             }
         }
 
+        // 3. HTTPS remotes: delegate to the system git credential helper.
+        if allowed_types.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            if let Ok(cfg) = git2::Config::open_default() {
+                return git2::Cred::credential_helper(&cfg, url, username_from_url);
+            }
+        }
+
         Err(git2::Error::from_str(
-            "no SSH credentials available: ensure ssh-agent is running or \
+            "no credentials available: ensure ssh-agent is running or \
              a key exists at ~/.ssh/id_ed25519, ~/.ssh/id_ecdsa, or ~/.ssh/id_rsa",
         ))
     });
@@ -90,7 +98,7 @@ pub fn is_network_error(err: &GitError) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// RepoManager — fetch / push
+// RepoManager - fetch / push
 // ---------------------------------------------------------------------------
 
 impl RepoManager {
@@ -163,8 +171,8 @@ impl RepoManager {
     ///
     /// # Errors
     ///
-    /// - [`GitError::PushExhausted`] — all retries failed
-    /// - [`GitError::Git2`] — network or other hard failure (returned immediately)
+    /// - [`GitError::PushExhausted`] - all retries failed
+    /// - [`GitError::Git2`] - network or other hard failure (returned immediately)
     pub fn push_with_retry<F, S>(
         &self,
         remote_name: &str,
@@ -217,7 +225,7 @@ where
     RejectFn: FnMut() -> Result<(), GitError>,
     SleepFn: Fn(Duration),
 {
-    // Initial attempt — no sleep.
+    // Initial attempt - no sleep.
     match try_push() {
         Ok(()) => return Ok(()),
         Err(e) if is_network_error(&e) => {
@@ -230,7 +238,7 @@ where
         Err(e) => return Err(e),
     }
 
-    // Retry loop — up to `backoff.len()` retries.
+    // Retry loop - up to `backoff.len()` retries.
     for (i, &delay) in backoff.iter().enumerate() {
         tracing::info!(
             attempt = i + 1,
@@ -392,7 +400,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // run_push_retry — success paths
+    // run_push_retry - success paths
     // -----------------------------------------------------------------------
 
     #[test]
@@ -479,7 +487,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // run_push_retry — exhaustion
+    // run_push_retry - exhaustion
     // -----------------------------------------------------------------------
 
     #[test]
@@ -546,7 +554,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // run_push_retry — error propagation
+    // run_push_retry - error propagation
     // -----------------------------------------------------------------------
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 date_created: 2026-03-29
-date_modified: 2026-03-29
+date_modified: 2026-03-30
 status: active
 audience: both
 cross_references:
@@ -858,7 +858,9 @@ Prefer `git2` (libgit2 Rust bindings) for all git operations. Advantages:
 - Programmatic error handling
 - No shell escaping concerns
 
-Fallback: if `git2` proves insufficient for a specific operation (e.g., SSH agent forwarding), shell out to `git` CLI with structured output parsing.
+All remote operations (fetch, push) must register an explicit `credentials` callback on `RemoteCallbacks` that delegates SSH authentication to `ssh-agent` via `git2::Cred::ssh_key_from_agent()` and falls back to the git credential helper for HTTPS. libgit2 does not reliably auto-detect `ssh-agent` across platforms and builds.
+
+Fallback: if `git2` proves insufficient for a specific operation, shell out to `git` CLI with structured output parsing.
 
 ---
 
