@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Fixed
+
+### Changed
+
+## [0.5.0] - 2026-03-30
+
+### Added
 - **Stale lock recovery (ADR-001)** — `try_acquire_sync_lock` now writes the
   holder's PID and a UTC timestamp into `chronicle.lock`.  When a new process
   finds the lock held, it checks whether the holder is still alive (`kill(pid, 0)`)
@@ -28,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (PID liveness + age timeout) resolves this automatically.
 
 ### Changed
+- **`toml` bumped from 0.8 to 1.1** — API-compatible major version stabilization.
+- **`rand` bumped from 0.8 to 0.9** — `SliceRandom` renamed to `IndexedRandom`,
+  `thread_rng()` renamed to `rng()`.
+- **CI actions bumped** — `actions/checkout` v6, `actions/cache` v5,
+  `actions/upload-artifact` v7, `actions/download-artifact` v8.
 
 ## [0.4.3] - 2026-03-31
 
@@ -189,7 +202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project initialized
 
-[Unreleased]: https://github.com/geekmuse/chronicle/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/geekmuse/chronicle/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/geekmuse/chronicle/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/geekmuse/chronicle/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/geekmuse/chronicle/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/geekmuse/chronicle/compare/v0.4.0...v0.4.1

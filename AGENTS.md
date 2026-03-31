@@ -8,8 +8,8 @@
 - **Name:** chronicle
 - **Language:** Rust
 - **Purpose:** Synchronize Pi and Claude Code session history across machines where `$HOME` paths differ, using path canonicalization and Git as the storage/transport backend
-- **Current Version:** 0.4.2
-- **Status:** Stable (v0.4.2)
+- **Current Version:** 0.5.0
+- **Status:** Stable (v0.5.0)
 
 ## Quick Start — Quality Checks
 
