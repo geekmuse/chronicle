@@ -13,6 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.4.3] - 2026-03-31
+
+### Fixed
+- **Cross-platform release builds** — `openssl-sys` failed to locate a system
+  OpenSSL library in cross-compile contexts (`x86_64-apple-darwin` on ARM macOS
+  runners; `aarch64-unknown-linux-gnu` via `cross`). Enabled `git2`'s
+  `vendored-openssl` feature to compile OpenSSL from source, eliminating the
+  system library dependency for all cross-compile targets.
+
+### Changed
+- **`git2` bumped from 0.18 to 0.20.4** — resolves a low-severity advisory:
+  potential undefined behaviour when dereferencing a `Buf` struct.
+
 ## [0.4.2] - 2026-03-30
 
 ### Added
@@ -160,7 +173,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Project initialized
 
-[Unreleased]: https://github.com/geekmuse/chronicle/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/geekmuse/chronicle/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/geekmuse/chronicle/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/geekmuse/chronicle/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/geekmuse/chronicle/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/geekmuse/chronicle/compare/v0.3.0...v0.4.0
