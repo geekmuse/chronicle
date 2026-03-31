@@ -1,4 +1,4 @@
-use rand::seq::SliceRandom as _;
+use rand::seq::IndexedRandom as _;
 
 /// Curated adjective word list for machine name generation.
 static ADJECTIVES: &[&str] = &[
@@ -155,7 +155,7 @@ static ANIMALS: &[&str] = &[
 /// but the collision probability is low enough for per-machine identity.
 #[must_use]
 pub fn generate() -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let adj = ADJECTIVES.choose(&mut rng).copied().unwrap_or("bold");
     let animal = ANIMALS.choose(&mut rng).copied().unwrap_or("barracuda");
     format!("{adj}-{animal}")
