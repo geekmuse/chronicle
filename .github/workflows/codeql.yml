@@ -1,0 +1,31 @@
+name: Security Audit
+
+# CodeQL does not support Rust. This workflow uses cargo-audit (RustSec Advisory DB)
+# as the equivalent SAST / dependency-vulnerability scanner for the Rust ecosystem.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 1'   # weekly, Monday 03:00 UTC
+
+permissions: read-all
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # retained for future CodeQL support if Rust lands
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Run cargo audit
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
