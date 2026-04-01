@@ -21,6 +21,38 @@
 
 ---
 
+## Overview
+
+Chronicle synchronizes Pi and Claude Code session history across multiple machines
+where `$HOME` paths differ.
+
+**Chronicle is for you if** you use AI coding agents across multiple machines with
+different home directory paths (e.g., `/Users/alice` on your Mac and `/home/alice`
+on your Linux workstation) and you want session history to follow you between them
+without running your own sync infrastructure.
+
+**Chronicle is not for you if** you only work on one machine, your machines already
+share identical `$HOME` layouts (in which case any file sync tool will work), or you
+already run self-hosted sync infrastructure like Syncthing with an always-on relay
+node — simpler tools will serve you better.
+
+It uses a canonicalization layer to abstract away per-machine path differences and
+Git as the storage and transport backend. Session files are merged using a grow-only
+CRDT (set-union), preserving the append-only invariant of JSONL session data. See
+[Storage Backends](docs/references/002-storage-backends.md) for why Git was chosen
+over alternatives.
+
+## Features
+
+- **Cross-machine sync** — Session history follows you between machines with different `$HOME` paths
+- **Path canonicalization** — `$HOME` paths are replaced with `{{SYNC_HOME}}` tokens, with configurable canonicalization levels (paths, structured fields, freeform text)
+- **CRDT merge** — Grow-only set merge ensures no session data is ever lost, even with concurrent edits on different machines
+- **Partial materialization** — Pull only the N most recent sessions per project, while the Git repo retains complete history
+- **Agent-agnostic** — Supports Pi and Claude Code with extensible agent architecture
+- **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
+
+---
+
 ## Before You Start: Back Up Your Existing Sessions
 
 Chronicle modifies session files in-place during `import` and `pull`. Take a complete
@@ -62,25 +94,6 @@ something goes wrong you want it clearly separated.
 > **Keep these backups.** Do not delete them until you have been running Chronicle
 > successfully across multiple machines for at least a week and have confirmed your
 > session history is intact.
-
----
-
-## Overview
-
-Chronicle synchronizes Pi and Claude Code session history across multiple machines
-where `$HOME` paths differ. It uses a canonicalization layer to abstract away
-per-machine path differences and Git as the storage and transport backend. Session
-files are merged using a grow-only CRDT (set-union), preserving the append-only
-invariant of JSONL session data.
-
-## Features
-
-- **Cross-machine sync** — Session history follows you between machines with different `$HOME` paths
-- **Path canonicalization** — `$HOME` paths are replaced with `{{SYNC_HOME}}` tokens, with configurable canonicalization levels (paths, structured fields, freeform text)
-- **CRDT merge** — Grow-only set merge ensures no session data is ever lost, even with concurrent edits on different machines
-- **Partial materialization** — Pull only the N most recent sessions per project, while the Git repo retains complete history
-- **Agent-agnostic** — Supports Pi and Claude Code with extensible agent architecture
-- **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
 
 ---
 
@@ -380,6 +393,9 @@ Detailed documentation lives in the [`docs/`](docs/) directory:
 | Specs | [`docs/specs/`](docs/specs/) | Feature specifications and design docs |
 | ADRs | [`docs/adrs/`](docs/adrs/) | Architecture Decision Records |
 | References | [`docs/references/`](docs/references/) | CLI reference, config reference, glossary |
+| — Encryption | [`docs/references/001-encryption.md`](docs/references/001-encryption.md) | Encryption options, tradeoffs, and setup |
+| — Storage Backends | [`docs/references/002-storage-backends.md`](docs/references/002-storage-backends.md) | Why Git, and how it compares to alternatives |
+| — Threat Model | [`docs/references/003-threat-model.md`](docs/references/003-threat-model.md) | Threat vectors, assumptions, and mitigations |
 | Tasks | [`docs/tasks/`](docs/tasks/) | Work items and implementation plans |
 | Research | [`docs/research/`](docs/research/) | Spikes, investigations, POC write-ups |
 
