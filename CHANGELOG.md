@@ -13,6 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.8.2] - 2026-04-03
+
+### Fixed
+- **`chronicle doctor` SSH key false negative** — `git.ssh_key` reported
+  `✗ Error: no readable SSH key found` even when the key was loaded in
+  the SSH agent (`ssh-add`, macOS Keychain, 1Password SSH agent, agent
+  forwarding, etc.). The check now falls through to an SSH agent probe
+  (`SSH_AUTH_SOCK` set + socket path exists) before reporting an error.
+  Pass detail is `"key loaded in SSH agent"`. Error text updated to
+  `"no SSH key file found and no SSH agent available"`; hint now leads
+  with `ssh-add` before `ssh-keygen`. Two new unit tests cover the
+  agent-available (pass) and no-file-no-agent (error) paths.
+
 ## [0.8.1] - 2026-04-03
 
 ### Fixed
