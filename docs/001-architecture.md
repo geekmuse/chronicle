@@ -122,13 +122,13 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 - Syncing project-local files (`CLAUDE.md`, `.ralphi/`, `.pi/`)
 - Deletion propagation (files are never removed from canonical store)
 - Windows support (deferred to future release)
-- Encryption at rest (future consideration)
+- ~~Encryption at rest~~ — Chronicle will not implement native encryption; see [Encryption](references/001-encryption.md) for rationale and third-party options
 
 ## Future Considerations
 
 - Deletion propagation via tombstone mechanism
 - Windows support with Task Scheduler
 - Platform-native scheduling (launchd/systemd) for tighter OS integration
-- Encryption at rest (GPG or age)
+- ~~Encryption at rest (GPG or age)~~ — see [Encryption](references/001-encryption.md)
 - Selective per-project sync rules
 - Web UI for browsing synced session history

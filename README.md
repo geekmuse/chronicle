@@ -8,7 +8,7 @@
 ---
 
 > [!WARNING]
-> **ALPHA SOFTWARE — USE WITH CAUTION**
+> **ALPHA SOFTWARE - USE WITH CAUTION**
 >
 > Chronicle is alpha-quality software. It directly modifies AI agent session files on
 > your machine. Bugs in the canonicalization, merge, or materialization logic could
@@ -21,12 +21,47 @@
 
 ---
 
+## Overview
+
+Chronicle synchronizes Pi and Claude Code session history across multiple machines
+where `$HOME` paths differ.
+
+**Chronicle is for you if** you use AI coding agents across multiple machines with
+different home directory paths (e.g., `/Users/alice` on your Mac and `/home/alice`
+on your Linux workstation) and you want session history to follow you between them
+without running your own sync infrastructure.
+
+**Chronicle is not for you if** you only work on one machine, your machines already
+share identical `$HOME` layouts (in which case any file sync tool will work), or you
+already run self-hosted sync infrastructure like Syncthing with an always-on relay
+node - simpler tools will serve you better.
+
+It uses a canonicalization layer to abstract away per-machine path differences and
+Git as the storage and transport backend. Session files are merged using a grow-only
+CRDT (set-union), preserving the append-only invariant of JSONL session data. See
+[Storage Backends](docs/references/002-storage-backends.md) for why Git was chosen
+over alternatives.
+
+## Features
+
+- **Cross-machine sync** - Session history follows you between machines with different `$HOME` paths
+- **Path canonicalization** - `$HOME` paths are replaced with `{{SYNC_HOME}}` tokens, with configurable canonicalization levels (paths, structured fields, freeform text)
+- **CRDT merge** - Grow-only set merge ensures no session data is ever lost, even with concurrent edits on different machines
+- **Partial materialization** - Pull only the N most recent sessions per project, while the Git repo retains complete history
+- **Agent-agnostic** - Supports Pi and Claude Code with extensible agent architecture
+- **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
+- **Rich `status` command** — Human-friendly (✓/⚠/✗) and machine-readable (`--porcelain`) output covering last-sync time/duration/operation, pending-file count, lock state, scheduler health, and per-agent sessions-dir existence; `--verbose` expands file lists and effective config values
+- **`doctor` command** — Pre-flight health check across Config, Git, Agents, and Scheduler subsystems; plain-English remediation hints; `--porcelain` for scripting; exit codes 0/1/2 (pass/warn/error)
+- **Fuzz-tested canonicalization** — A `cargo-fuzz` / libFuzzer target (`fuzz/fuzz_targets/fuzz_roundtrip.rs`) verifies the L2/L3 round-trip invariant against arbitrary inputs; runs weekly in CI (`fuzz.yml`) for 60 seconds with zero-crash enforcement; `fuzz-build` step runs on every PR
+
+---
+
 ## Before You Start: Back Up Your Existing Sessions
 
 Chronicle modifies session files in-place during `import` and `pull`. Take a complete
 snapshot of your session data **before** running any Chronicle command for the first time.
 
-**Step 1 — Identify your session directories**
+**Step 1 - Identify your session directories**
 
 | Agent | Default session directory |
 |-------|--------------------------|
@@ -35,7 +70,7 @@ snapshot of your session data **before** running any Chronicle command for the f
 
 > These directories may not both exist if you only use one agent.
 
-**Step 2 — Create a dated backup**
+**Step 2 - Create a dated backup**
 
 ```bash
 # Back up Pi sessions (skip if you don't use Pi)
@@ -45,7 +80,7 @@ cp -r ~/.pi/agent/sessions/ ~/chronicle-backup-pi-$(date +%Y%m%d)/
 cp -r ~/.claude/projects/ ~/chronicle-backup-claude-$(date +%Y%m%d)/
 ```
 
-**Step 3 — Verify the backup**
+**Step 3 - Verify the backup**
 
 ```bash
 # Confirm the backup directories exist and are non-empty
@@ -53,10 +88,10 @@ ls -lh ~/chronicle-backup-pi-$(date +%Y%m%d)/ 2>/dev/null
 ls -lh ~/chronicle-backup-claude-$(date +%Y%m%d)/ 2>/dev/null
 ```
 
-**Step 4 — Store the backup somewhere safe**
+**Step 4 - Store the backup somewhere safe**
 
 Copy the backup directories to an external drive, cloud storage, or any location
-outside `$HOME` before proceeding. Do not rely on the backup being in `$HOME` — if
+outside `$HOME` before proceeding. Do not rely on the backup being in `$HOME` - if
 something goes wrong you want it clearly separated.
 
 > **Keep these backups.** Do not delete them until you have been running Chronicle
@@ -65,27 +100,6 @@ something goes wrong you want it clearly separated.
 
 ---
 
-## Overview
-
-Chronicle synchronizes Pi and Claude Code session history across multiple machines
-where `$HOME` paths differ. It uses a canonicalization layer to abstract away
-per-machine path differences and Git as the storage and transport backend. Session
-files are merged using a grow-only CRDT (set-union), preserving the append-only
-invariant of JSONL session data.
-
-## Features
-
-- **Cross-machine sync** — Session history follows you between machines with different `$HOME` paths
-- **Path canonicalization** — `$HOME` paths are replaced with `{{SYNC_HOME}}` tokens, with configurable canonicalization levels (paths, structured fields, freeform text)
-- **CRDT merge** — Grow-only set merge ensures no session data is ever lost, even with concurrent edits on different machines
-- **Partial materialization** — Pull only the N most recent sessions per project, while the Git repo retains complete history
-- **Agent-agnostic** — Supports Pi and Claude Code with extensible agent architecture
-- **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
-- **Rich `status` command** — Human-friendly (✓/⚠/✗) and machine-readable (`--porcelain`) output covering last-sync time/duration/operation, pending-file count, lock state, scheduler health, and per-agent sessions-dir existence; `--verbose` expands file lists and effective config values
-- **`doctor` command** — Pre-flight health check across Config, Git, Agents, and Scheduler subsystems; plain-English remediation hints; `--porcelain` for scripting; exit codes 0/1/2 (pass/warn/error)
-- **Fuzz-tested canonicalization** — A `cargo-fuzz` / libFuzzer target (`fuzz/fuzz_targets/fuzz_roundtrip.rs`) verifies the L2/L3 round-trip invariant against arbitrary inputs; runs weekly in CI (`fuzz.yml`) for 60 seconds with zero-crash enforcement; `fuzz-build` step runs on every PR
-
----
 
 ## Installation
 
@@ -132,7 +146,7 @@ chronicle --version
 
 ## Backend Repository Setup
 
-Chronicle uses a private Git repository as the sync backend — your session history
+Chronicle uses a private Git repository as the sync backend - your session history
 is stored there in canonicalized form and exchanged between machines via normal
 Git push/pull.
 
@@ -142,10 +156,10 @@ Session files contain the full text of your conversations with AI coding agents,
 including code, file paths, and potentially sensitive details about your projects.
 **The backend repository must be private.** Never use a public repository.
 
-### Step 1 — Create a private repository
+### Step 1 - Create a private repository
 
 Create an empty **private** repository on GitHub, GitLab, Gitea, or any Git host
-you control. Do not initialize it with a README, `.gitignore`, or any other files —
+you control. Do not initialize it with a README, `.gitignore`, or any other files -
 Chronicle will set up the repository contents itself.
 
 ```
@@ -153,10 +167,10 @@ GitHub:  https://github.com/new   → set to Private
 GitLab:  https://gitlab.com/projects/new → set Visibility to Private
 ```
 
-### Step 2 — Configure SSH access
+### Step 2 - Configure SSH access
 
 Chronicle uses [libgit2](https://libgit2.org/) for all Git operations. **libgit2 is
-not `~/.ssh/config`-aware** — it ignores `IdentityFile`, `Host` blocks, and other
+not `~/.ssh/config`-aware** - it ignores `IdentityFile`, `Host` blocks, and other
 ssh config directives entirely. All SSH authentication goes through the SSH agent
 protocol via `SSH_AUTH_SOCK`.
 
@@ -210,7 +224,7 @@ ssh -T git@github.com       # GitHub
 ssh -T git@gitlab.com       # GitLab
 ```
 
-### Step 3 — Note the SSH remote URL
+### Step 3 - Note the SSH remote URL
 
 Use the SSH remote URL (not HTTPS) for your backend repo, for example:
 
@@ -227,7 +241,7 @@ and tested path.
 ## Quick Start
 
 ```bash
-# 1. First-time setup — creates config at ~/.config/chronicle/config.toml,
+# 1. First-time setup - creates config at ~/.config/chronicle/config.toml,
 #    generates a machine name, and initializes the local mirror repo
 chronicle init
 
@@ -250,7 +264,7 @@ chronicle schedule install    # runs every 5 minutes by default
 ## Usage
 
 ```bash
-# First-time setup — creates config, generates machine name, inits local repo
+# First-time setup - creates config, generates machine name, inits local repo
 chronicle init
 
 # Import existing session history (one-time, before first sync)
@@ -302,7 +316,7 @@ chronicle schedule status
 Chronicle canonicalizes your home directory (`$HOME` → `{{SYNC_HOME}}`), but it
 does **not** automatically handle differences in the path structure beneath it.
 If your projects live at `~/Dev/` on one machine and `~/projects/` on another,
-Chronicle will treat them as entirely separate project trees — sessions will not
+Chronicle will treat them as entirely separate project trees - sessions will not
 merge, and both machines will accumulate independent histories that never converge.
 
 For example:
@@ -398,6 +412,9 @@ Detailed documentation lives in the [`docs/`](docs/) directory:
 | Specs | [`docs/specs/`](docs/specs/) | Feature specifications and design docs |
 | ADRs | [`docs/adrs/`](docs/adrs/) | Architecture Decision Records |
 | References | [`docs/references/`](docs/references/) | CLI reference, config reference, glossary |
+| - Encryption | [`docs/references/001-encryption.md`](docs/references/001-encryption.md) | Encryption options, tradeoffs, and setup |
+| - Storage Backends | [`docs/references/002-storage-backends.md`](docs/references/002-storage-backends.md) | Why Git, and how it compares to alternatives |
+| - Threat Model | [`docs/references/003-threat-model.md`](docs/references/003-threat-model.md) | Threat vectors, assumptions, and mitigations |
 | Tasks | [`docs/tasks/`](docs/tasks/) | Work items and implementation plans |
 | Research | [`docs/research/`](docs/research/) | Spikes, investigations, POC write-ups |
 
@@ -439,7 +456,7 @@ This project uses [Semantic Versioning](https://semver.org/). See [CHANGELOG.md]
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT - see [LICENSE](LICENSE) for details.
 
 ## Author
 
