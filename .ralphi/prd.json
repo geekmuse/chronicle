@@ -50,8 +50,8 @@
       ],
       "notes": "Reuse StatusFormatter<W> from spec 002 for ok/warn/err/kv primitives where possible. The section header and remediation-hint indentation are new output patterns — add them to StatusFormatter or implement a parallel DoctorFormatter if StatusFormatter's API makes it awkward.",
       "startedAt": "2026-04-03T04:24:57.406Z",
-      "updatedAt": "2026-04-03T04:35:00.000Z",
-      "completedAt": "2026-04-03T04:35:00.000Z"
+      "updatedAt": "2026-04-03T04:34:37.070Z",
+      "completedAt": "2026-04-03T04:34:37.070Z"
     },
     {
       "id": "US-003",
@@ -69,11 +69,14 @@
         "cargo test passes; cargo clippy -- -D warnings clean; cargo fmt --check clean; cargo deny check clean"
       ],
       "priority": 3,
-      "status": "open",
+      "status": "done",
       "dependsOn": [
         "US-002"
       ],
-      "notes": "Integration tests live in tests/integration.rs alongside existing tests. For the remote-reachability check in integration tests, use a non-existent remote URL so the check fails fast (within the 5-second timeout) rather than requiring a real remote."
+      "notes": "Integration tests live in tests/integration.rs alongside existing tests. For the remote-reachability check in integration tests, use a non-existent remote URL so the check fails fast (within the 5-second timeout) rather than requiring a real remote.",
+      "startedAt": "2026-04-03T04:34:37.072Z",
+      "updatedAt": "2026-04-03T04:45:00.000Z",
+      "completedAt": "2026-04-03T04:45:00.000Z"
     }
   ]
 }

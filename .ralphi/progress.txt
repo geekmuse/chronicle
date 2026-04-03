@@ -72,3 +72,37 @@ Corrective Plan: N/A
   - The summary uses `·` (U+00B7 middle dot) and `→` (U+2192) for hint prefix —
     confirm these render on target terminals before changing.
 ---
+
+## 2026-04-03 — US-003
+Session: iter-780516bf
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Implemented `--porcelain` mode in `format_doctor_results`:
+  - Emits `check.<key>=<state>[:<detail>]` for every CheckResult in section order
+  - Values: `ok[:<detail>]`, `warning:<detail>`, `error:<detail>`, `skipped[:<reason>]`
+  - Emits `summary.errors=N`, `summary.warnings=N`, `summary.passed=N` as last three lines
+  - No ANSI codes; `--porcelain` implies `--no-color` (enforced in handle_doctor)
+- Added `porcelain_check_value()` private helper for state→porcelain-string mapping
+- Made `DoctorCheckResults` pub with pub fields (enables integration test injection)
+- Made `format_doctor_results` pub (enables integration test direct calls)
+- Updated DoctorArgs.porcelain doc comment (removed deferred TODO)
+- Added 3 integration tests in `tests/integration.rs`:
+  - `doctor_porcelain_happy_path_exit_0`: injects all-pass `DoctorCheckResults`
+    via `format_doctor_results`; verifies exit 0, all check lines ok/skipped, no ANSI
+  - `doctor_porcelain_config_file_missing_exit_2`: calls `doctor_write` with
+    non-existent config path; verifies exit 2, `check.config.file=error:<detail>`
+  - `doctor_porcelain_agent_sessions_dir_missing`: calls `doctor_write` with
+    absent pi sessions dir; verifies exit >= 1, `check.agents.pi=error:<detail>`
+- All 14 integration tests pass (`cargo test -- --test-threads=1`)
+- Files changed: src/cli/mod.rs, tests/integration.rs, .ralphi/prd.json, .ralphi/progress.txt
+- **Learnings for future iterations:**
+  - `format_doctor_results` must be pub for integration tests to inject results;
+    the pattern (inject `DoctorCheckResults` directly) avoids all FS/network deps.
+  - For `doctor_write` integration tests (real FS): omit remote_url in config to
+    get `git.remote=Skipped` rather than a slow network timeout.
+  - `porcelain_check_value` is the single source of truth for the format;
+    keeping it separate makes it easy to audit against spec.
+  - No new dependencies required — all US-003 features are pure Rust std.
+---
