@@ -1,75 +1,79 @@
 {
   "project": "chronicle",
-  "branchName": "ralph/l3-canon-hardening",
-  "description": "Strengthen confidence in the L3 canonicalization pipeline by expanding proptest generators to cover spaces, dots, Unicode, and complex JSON structures, then adding a cargo-fuzz libFuzzer target with seed corpus and CI integration.",
+  "branchName": "ralph/doctor-command",
+  "description": "Add a `chronicle doctor` command that performs a structured pre-flight health check across Config, Git, Agents, and Scheduler subsystems, reporting results with plain-English remediation hints, color symbols, and a stable --porcelain output mode.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Expand proptest generators \u2014 richer home/subpath, content templates, nested JSON, and array tests",
-      "description": "Extend the existing proptest suite in src/canon/levels.rs and src/canon/mod.rs to cover a much broader input space. No production code changes \u2014 test-only.\n\n1. arb_home_path(): add usernames with dots (first.last), hyphens (brad-matic), and spaces (First Last); add longer home roots (/home/ubuntu, /Users/...).\n2. arb_subpath(): add components with spaces (my project), dots (main.rs, v1.2.3), and deeper paths (up to 8 components).\n3. Content templates: replace the single 'file at {path} done' template with a set: path-only, embedded mid-sentence, same path twice, two different subpaths, XML-attribute context, URL-then-path context.\n4. Deeply nested JSON proptest: generate arbitrary JSON objects up to 4 levels deep where leaf strings may contain home paths; assert round-trip at level 3.\n5. Array-of-strings proptest: place multiple home-path strings in a JSON array value and verify all canonicalize and restore correctly.",
+      "title": "CheckResult / CheckState types and all four check functions",
+      "description": "Define the data model and pure check logic used by `chronicle doctor`. Create `CheckState` enum (Pass, Warn, Error, Skipped) and `CheckResult` struct (key, state, detail, hint). Implement the four check groups as standalone functions: `check_config` (file exists, valid TOML, git.remote non-empty), `check_git` (repo initialised, remote reachable with 5-second timeout, SSH key found — SSH remotes only), `check_agents` (sessions dir exists + file count, one entry per enabled agent), `check_scheduler` (crontab entry installed, lock absent or held by live non-stale PID). All check functions accept injected paths/state so they are unit-testable without a real filesystem or network. Write unit tests for every check covering pass, warn, error, and skipped states.",
       "acceptanceCriteria": [
-        "arb_home_path() generates at least: plain username, username with dot, username with hyphen, username with space, /home/<user> root, /Users/<user> root",
-        "arb_subpath() generates at least: plain component, component with space, component with dot, 5-8 component deep paths",
-        "Content template proptest uses all six templates defined in spec \u00a73.1.3; each template produces a valid round-trip",
-        "A proptest named roundtrip_deeply_nested_json generates JSON objects up to 4 levels deep and asserts decanon(canon(line, 3)) == line",
-        "A proptest named roundtrip_array_of_strings generates a JSON object with an array-of-string value containing 1\u20135 home-path strings and asserts round-trip",
-        "All existing tests continue to pass unchanged",
-        "cargo test passes; cargo clippy -- -D warnings clean; cargo fmt --check clean"
+        "CheckState enum has Pass, Warn, Error, Skipped variants",
+        "CheckResult struct has key (&str or String), state (CheckState), detail (String), hint (Option<String>)",
+        "check_config returns 3 CheckResults: config.file, config.toml, config.remote",
+        "check_git returns up to 3 CheckResults: git.repo, git.remote (skipped when remote empty), git.ssh_key (skipped for HTTPS remotes)",
+        "check_agents returns one CheckResult per enabled agent (agents.pi, agents.claude) with file count in detail on pass",
+        "check_scheduler returns 2 CheckResults: scheduler.cron, scheduler.lock",
+        "Remote reachability check uses a 5-second connect timeout and reports error on timeout rather than hanging",
+        "SSH key check probes ~/.ssh/id_ed25519, ~/.ssh/id_ecdsa, ~/.ssh/id_rsa in order and passes if any is readable",
+        "All check functions have unit tests covering pass, warn/error, and skipped branches",
+        "cargo test passes; cargo clippy -- -D warnings clean; cargo fmt --check clean; cargo deny check clean"
       ],
       "priority": 1,
       "status": "done",
       "dependsOn": [],
-      "notes": "Touch only #[cfg(test)] blocks in src/canon/levels.rs and src/canon/mod.rs. Do not modify production code or the L2 field whitelist.",
-      "startedAt": "2026-04-03T03:37:13.734Z",
-      "updatedAt": "2026-04-03T03:45:37.985Z",
-      "completedAt": "2026-04-03T03:45:37.985Z"
+      "notes": "Keep check functions in src/cli/mod.rs initially; extract to src/doctor/mod.rs only if the module grows beyond ~300 lines of check logic. Use existing StatusFormatter<W> color/TTY helpers from spec 002 rather than duplicating them.",
+      "startedAt": "2026-04-03T04:13:24.394Z",
+      "updatedAt": "2026-04-03T04:24:57.404Z",
+      "completedAt": "2026-04-03T04:24:57.404Z"
     },
     {
       "id": "US-002",
-      "title": "Cargo-fuzz workspace, fuzz_roundtrip target, and seed corpus",
-      "description": "Create the fuzz/ sub-workspace and implement the fuzz_roundtrip libFuzzer target as specified in spec \u00a73.2.1 and \u00a73.2.2.\n\n1. Create fuzz/Cargo.toml as a separate workspace (not merged into the root workspace) with libfuzzer-sys and arbitrary as dev-dependencies, depending on the chronicle crate via path.\n2. Create fuzz/fuzz_targets/fuzz_roundtrip.rs: interpret raw bytes as (home_path_len_byte, level_byte, rest=JSON); build a TokenRegistry with the extracted home; pick level 2 or 3; assert decanon(canon(line, level)) == line when canonicalize_line succeeds.\n3. Create fuzz/corpus/fuzz_roundtrip/ with at least two seed files: one minimal JSON line using /Users/testuser/Dev/project as home, one representing a typical Claude session JSONL entry (sanitized).\n4. Verify cargo +nightly fuzz build fuzz_roundtrip succeeds locally.",
+      "title": "DoctorArgs CLI wiring and human-readable output formatter",
+      "description": "Wire `chronicle doctor` into the CLI and implement the human-readable output. Add `DoctorArgs { porcelain: bool, no_color: bool }` and a `Doctor` subcommand to the clap command tree in src/main.rs and src/cli/mod.rs. Implement `doctor_impl` (testable via generic writer) that runs all four check groups and emits grouped output: section headers (Config, Git, Agents, Scheduler), per-check lines with ✓/⚠/✗ symbols and optional remediation hints indented on the next line, and a summary line (`N errors · N warnings · N checks passed`). Apply the same color/TTY/NO_COLOR logic as `chronicle status`. Enforce exit codes: 0 all-pass, 1 warnings-only, 2 any-error.",
       "acceptanceCriteria": [
-        "fuzz/Cargo.toml exists as a valid standalone workspace with [dependencies] chronicle = { path = '..' } and [dev-dependencies] libfuzzer-sys, arbitrary",
-        "fuzz/fuzz_targets/fuzz_roundtrip.rs compiles with cargo +nightly fuzz build fuzz_roundtrip",
-        "The target correctly extracts home_path_len and level from raw bytes and handles truncated/empty input without panicking",
-        "Invariant checked: if canonicalize_line(input, level) returns Ok(canonical), then decanonicalize_line(canonical) must return Ok and equal input",
-        "If canonicalize_line returns Err (malformed JSON), the fuzz target returns without asserting",
-        "fuzz/corpus/fuzz_roundtrip/ contains at least 2 seed files, each a valid bytes encoding of a JSON line with a real home path",
-        "Running cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=10 against the seed corpus produces no crashes or panics",
-        "cargo test and cargo clippy -- -D warnings still pass at the root workspace level"
+        "chronicle doctor subcommand is registered and dispatches to doctor_impl",
+        "DoctorArgs has --porcelain and --no-color flags (--no-color and NO_COLOR env var suppress ANSI; --porcelain implies no color)",
+        "Output is grouped into four sections: Config, Git, Agents, Scheduler",
+        "Each check line is prefixed with ✓ (green), ⚠ (yellow), or ✗ (red) followed by the check description and detail",
+        "Each failing or warned check is followed by an indented remediation hint on the next line",
+        "Summary line always printed: 'N errors · N warnings · N checks passed'",
+        "Exit code 0 when all checks pass, 1 when warnings only, 2 when any error",
+        "doctor_impl accepts a generic io::Write writer so output can be captured in tests",
+        "Unit tests cover: all-pass output shape, single error output shape, single warning output shape, summary line counts",
+        "cargo test passes; cargo clippy -- -D warnings clean; cargo fmt --check clean; cargo deny check clean"
       ],
       "priority": 2,
-      "status": "done",
+      "status": "in_progress",
       "dependsOn": [
         "US-001"
       ],
-      "notes": "The fuzz/ workspace must NOT be added to the root Cargo.toml workspace members (cargo-fuzz manages its own workspace). Check that cargo deny check still passes at root after fuzz/ is added.",
-      "startedAt": "2026-04-03T03:45:37.988Z",
-      "updatedAt": "2026-04-03T03:59:38.341Z",
-      "completedAt": "2026-04-03T03:59:38.341Z"
+      "notes": "Reuse StatusFormatter<W> from spec 002 for ok/warn/err/kv primitives where possible. The section header and remediation-hint indentation are new output patterns — add them to StatusFormatter or implement a parallel DoctorFormatter if StatusFormatter's API makes it awkward.",
+      "startedAt": "2026-04-03T04:24:57.406Z",
+      "updatedAt": "2026-04-03T04:24:57.406Z",
+      "completedAt": null
     },
     {
       "id": "US-003",
-      "title": "CI integration \u2014 fuzz build-only step in ci.yml and scheduled fuzz.yml workflow",
-      "description": "Add CI support for the fuzz target as specified in spec \u00a73.2.3. The fuzz target must compile on every CI push but only run on a weekly schedule.\n\n1. Add a 'fuzz-build' step to .github/workflows/ci.yml and .forgejo/workflows/ci.yml: install Rust nightly, run cargo +nightly fuzz build fuzz_roundtrip (build only, no run).\n2. Create .github/workflows/fuzz.yml: scheduled workflow (cron: weekly, e.g. '0 2 * * 0') that installs Rust nightly and runs cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=60; fails the workflow on any crash or panic.\n3. Create .forgejo/workflows/fuzz.yml mirroring the GitHub workflow.",
+      "title": "--porcelain output, integration tests, and exit-code enforcement",
+      "description": "Complete the `chronicle doctor` command with stable machine-readable output and end-to-end tests. Implement --porcelain mode: emit one `check.<key>=<state>[:<detail>]` line per check, then `summary.errors=N`, `summary.warnings=N`, `summary.passed=N`. Values follow `ok[:<detail>]`, `warning:<detail>`, `error:<detail>`. Keys are stable (no colour, no symbols). Write integration tests covering: (1) happy path — all checks pass, exit 0, output contains expected porcelain keys; (2) config error path — missing config file, exit 2, check.config.file=error; (3) agent warning path — sessions dir absent, exit 1 or 2, check.agents.<name>=error. Verify that --porcelain and human-readable modes both compile and run correctly end-to-end.",
       "acceptanceCriteria": [
-        ".github/workflows/ci.yml contains a new step (or job) that runs cargo +nightly fuzz build fuzz_roundtrip using a nightly Rust toolchain",
-        ".forgejo/workflows/ci.yml mirrors the same fuzz build step",
-        ".github/workflows/fuzz.yml exists with a schedule trigger (weekly cron), installs nightly Rust, and runs the fuzz target for 60 seconds",
-        ".forgejo/workflows/fuzz.yml exists and mirrors the GitHub fuzz workflow",
-        "The fuzz build step in ci.yml does not run the fuzzer (build only) so CI remains fast",
-        "The scheduled fuzz workflow is configured to fail if the fuzzer finds a crash",
-        "cargo test, cargo clippy -- -D warnings, cargo fmt --check, cargo deny check all still pass"
+        "--porcelain emits one check.<key>=<state>[:<detail>] line per check in deterministic order",
+        "--porcelain emits summary.errors, summary.warnings, summary.passed as final three lines",
+        "Porcelain values follow ok[:<detail>], warning:<detail>, error:<detail> pattern with no ANSI codes",
+        "Skipped checks emit check.<key>=skipped[:<reason>]",
+        "Integration test: happy path runs chronicle doctor against a fully configured temp environment, exits 0, all porcelain lines are ok",
+        "Integration test: missing config file causes exit 2 and check.config.file=error:<detail> in porcelain output",
+        "Integration test: sessions dir absent for one agent causes check.agents.<name>=error:<detail> in output",
+        "All 3 integration tests pass in CI (no network required — remote reachability can be stubbed or the repo path set to a non-existent remote)",
+        "cargo test passes; cargo clippy -- -D warnings clean; cargo fmt --check clean; cargo deny check clean"
       ],
       "priority": 3,
-      "status": "done",
+      "status": "open",
       "dependsOn": [
         "US-002"
       ],
-      "notes": "Check existing ci.yml structure carefully before adding the nightly step \u2014 match the existing job/step style. The fuzz job can run on ubuntu-latest. For Forgejo, match the existing runner labels used in .forgejo/workflows/ci.yml.",
-      "startedAt": "2026-04-03T03:59:38.342Z",
-      "updatedAt": "2026-04-03T04:02:05.839268Z",
-      "completedAt": "2026-04-03T04:02:05.839268Z"
+      "notes": "Integration tests live in tests/integration.rs alongside existing tests. For the remote-reachability check in integration tests, use a non-existent remote URL so the check fails fast (within the 5-second timeout) rather than requiring a real remote."
     }
   ]
 }

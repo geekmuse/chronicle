@@ -136,7 +136,7 @@
     {
       "id": "iter-41a90b4a",
       "phase": "ralphi-loop-iteration",
-      "status": "running",
+      "status": "completed",
       "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-23-02-317Z_48265cd1-bd01-4502-add2-3afffb5c6c7f.jsonl",
       "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-23-02-317Z_48265cd1-bd01-4502-add2-3afffb5c6c7f.jsonl",
       "checkpointLeafId": null,
@@ -147,7 +147,193 @@
       "loopId": "loop-33f444ec",
       "iteration": 4,
       "storyId": "US-004",
-      "storyTitle": "Scheduler section, --verbose expansion, porcelain completion, and integration test"
+      "storyTitle": "Scheduler section, --verbose expansion, porcelain completion, and integration test",
+      "summary": "Implemented US-004 — the final story in the chronicle status improvements PRD. Added Scheduler section (installed/not_installed/malformed with next-run time computation), --verbose expansion for Pending Files (file paths) and Config (effective values), completed all porcelain keys from spec §3.3, and added 19 new tests (16 unit + 3 integration). All 417 tests pass; clippy, fmt, and deny all clean. All 4 PRD stories are now done.",
+      "outputs": [
+        "src/cli/mod.rs",
+        "tests/integration.rs",
+        ".ralphi/prd.json",
+        ".ralphi/progress.txt"
+      ],
+      "complete": true,
+      "reviewPasses": 1,
+      "trajectory": "ON_TRACK",
+      "reflectionSummary": "US-004 implemented cleanly. All acceptance criteria met: scheduler section with 3 states, next-run time via modulo on Unix timestamp, verbose file-path listing, verbose config effective values, all porcelain keys emitted in every code path (including empty values on config error), exit-0 guarantee tested, and 3 integration tests in tests/integration.rs covering happy path, porcelain happy path, and missing-sessions-dir error path. No scope creep. No new dependencies added.",
+      "nextIterationPlan": "All PRD user stories are complete (US-001 through US-004). The loop is done.",
+      "completedAt": "2026-04-03T03:30:22.340Z"
+    },
+    {
+      "id": "run-0d1c1525",
+      "phase": "ralphi-convert",
+      "status": "completed",
+      "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "checkpointLeafId": "a599d89d",
+      "checkpointSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "cwd": "/Users/bradmatic/Dev/geekmuse/chronicle",
+      "createdAt": "2026-04-03T03:35:24.709Z",
+      "autoConfirm": true,
+      "summary": "Converted docs/specs/003-l3-canonicalization-hardening.md to .ralphi/prd.json. Archived the previous PRD (ralph/status-improvements) to .ralphi/archive/2026-04-03-status-improvements/prd.json. Planned and wrote 3 right-sized user stories on branch ralph/l3-canon-hardening: US-001 (expand all proptest generators — home/subpath components, content templates, nested JSON, array-of-strings; src/canon test-only), US-002 (cargo-fuzz workspace, fuzz_roundtrip libFuzzer target, seed corpus), US-003 (CI integration: fuzz build-only step in ci.yml + scheduled fuzz.yml for GitHub and Forgejo). Dependency chain: US-001 → US-002 → US-003.",
+      "outputs": [
+        ".ralphi/prd.json",
+        ".ralphi/archive/2026-04-03-status-improvements/prd.json"
+      ],
+      "complete": false,
+      "reviewPasses": 1,
+      "completedAt": "2026-04-03T03:37:06.478Z"
+    },
+    {
+      "id": "iter-57805428",
+      "phase": "ralphi-loop-iteration",
+      "status": "completed",
+      "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-37-13-733Z_993fe93b-950f-4c21-afa9-f61be8702bbe.jsonl",
+      "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-37-13-733Z_993fe93b-950f-4c21-afa9-f61be8702bbe.jsonl",
+      "checkpointLeafId": null,
+      "checkpointSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "cwd": "/Users/bradmatic/Dev/geekmuse/chronicle",
+      "createdAt": "2026-04-03T03:37:13.734Z",
+      "autoConfirm": true,
+      "loopId": "loop-5e1fd382",
+      "iteration": 1,
+      "storyId": "US-001",
+      "storyTitle": "Expand proptest generators — richer home/subpath, content templates, nested JSON, and array tests",
+      "summary": "US-001 complete. Expanded proptest generators in src/canon/levels.rs: arb_subpath() now covers plain/space/dot components up to 8 deep; new arb_home_path() covers plain/dot/hyphen/space usernames with /Users and /home roots; added prop_l3_content_templates (6 templates), roundtrip_deeply_nested_json (4-level deep JSON), and roundtrip_array_of_strings (1-5 home paths in array). All 409 tests pass; clippy/fmt/deny clean. Commit 3d4e3cc.",
+      "outputs": [
+        "src/canon/levels.rs",
+        ".ralphi/prd.json",
+        ".ralphi/progress.txt"
+      ],
+      "complete": false,
+      "reviewPasses": 1,
+      "trajectory": "ON_TRACK",
+      "reflectionSummary": "US-001 fully satisfies all acceptance criteria. Only #[cfg(test)] code was touched. The two remaining open stories (US-002: cargo-fuzz workspace, US-003: CI integration) are unblocked and ready to proceed.",
+      "nextIterationPlan": "Pick up US-002: create fuzz/ sub-workspace with Cargo.toml (libfuzzer-sys, arbitrary, chronicle path dep), implement fuzz/fuzz_targets/fuzz_roundtrip.rs (extract home/level from bytes, assert round-trip), and create at least 2 seed corpus files in fuzz/corpus/fuzz_roundtrip/.",
+      "completedAt": "2026-04-03T03:45:37.963Z"
+    },
+    {
+      "id": "iter-c11d5ee8",
+      "phase": "ralphi-loop-iteration",
+      "status": "completed",
+      "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-45-37-988Z_9df89733-941b-4c01-83f5-baace3c3c251.jsonl",
+      "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-45-37-988Z_9df89733-941b-4c01-83f5-baace3c3c251.jsonl",
+      "checkpointLeafId": null,
+      "checkpointSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "cwd": "/Users/bradmatic/Dev/geekmuse/chronicle",
+      "createdAt": "2026-04-03T03:45:37.988Z",
+      "autoConfirm": true,
+      "loopId": "loop-5e1fd382",
+      "iteration": 2,
+      "storyId": "US-002",
+      "storyTitle": "Cargo-fuzz workspace, fuzz_roundtrip target, and seed corpus",
+      "summary": "Implemented US-002: Cargo-fuzz workspace, fuzz_roundtrip target, and seed corpus.\n\nCreated the fuzz/ sub-workspace with:\n- fuzz/Cargo.toml: standalone workspace with libfuzzer-sys + serde_json in [dependencies], chronicle via path, arbitrary in [dev-dependencies], [workspace] declaration\n- fuzz/fuzz_targets/fuzz_roundtrip.rs: libFuzzer target interpreting raw bytes as (home_path_len_byte, level_byte, home_path, json_line); builds TokenRegistry; asserts the round-trip invariant for double-normalised JSON objects; handles all edge cases without panicking\n- fuzz/corpus/fuzz_roundtrip/seed_simple.bin: L2 seed with /Users/testuser/Dev/project\n- fuzz/corpus/fuzz_roundtrip/seed_claude.bin: L3 seed with /Users/testuser\n- fuzz/.gitignore: excludes target/ and artifacts/\n\nTwo correctness issues found and fixed through live fuzzing: (1) serde_json BTreeMap key ordering requires pre-normalisation; (2) serde_json float non-idempotency requires double-normalisation guard + JSON-objects-only filter.\n\nVerified: cargo +nightly fuzz build passes; 10-second run produces zero crashes (~1M executions); all 409 root tests pass; clippy/fmt/deny clean. Commit: 7782293.",
+      "outputs": [
+        "fuzz/Cargo.toml",
+        "fuzz/fuzz_targets/fuzz_roundtrip.rs",
+        "fuzz/corpus/fuzz_roundtrip/seed_simple.bin",
+        "fuzz/corpus/fuzz_roundtrip/seed_claude.bin",
+        "fuzz/.gitignore",
+        ".ralphi/prd.json",
+        ".ralphi/progress.txt"
+      ],
+      "complete": false,
+      "reviewPasses": 1,
+      "trajectory": "ON_TRACK",
+      "reflectionSummary": "US-002 fully delivered. The fuzz workspace compiles and runs cleanly. Two non-obvious serde_json serialisation behaviours were discovered via live fuzzing and correctly handled in the fuzz target. US-003 (CI integration) remains open and is the next story to implement.",
+      "nextIterationPlan": "Implement US-003: add fuzz-build step to ci.yml and forgejo ci.yml, create .github/workflows/fuzz.yml and .forgejo/workflows/fuzz.yml for scheduled weekly fuzzing. Must carefully match existing job/step style in each CI file and use the nightly toolchain.",
+      "completedAt": "2026-04-03T03:59:38.333Z"
+    },
+    {
+      "id": "iter-2ee2a832",
+      "phase": "ralphi-loop-iteration",
+      "status": "completed",
+      "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-59-38-342Z_2554a176-c6c1-493d-ad73-ecf365ff489c.jsonl",
+      "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-59-38-342Z_2554a176-c6c1-493d-ad73-ecf365ff489c.jsonl",
+      "checkpointLeafId": null,
+      "checkpointSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "cwd": "/Users/bradmatic/Dev/geekmuse/chronicle",
+      "createdAt": "2026-04-03T03:59:38.342Z",
+      "autoConfirm": true,
+      "loopId": "loop-5e1fd382",
+      "iteration": 3,
+      "storyId": "US-003",
+      "storyTitle": "CI integration — fuzz build-only step in ci.yml and scheduled fuzz.yml workflow",
+      "summary": "US-003 complete: added fuzz-build job to .github/workflows/ci.yml and .forgejo/workflows/ci.yml (nightly toolchain, cargo +nightly fuzz build fuzz_roundtrip, build-only); created .github/workflows/fuzz.yml and .forgejo/workflows/fuzz.yml as weekly scheduled workflows (cron '0 2 * * 0') that run the fuzz target for 60 seconds and fail automatically on any crash. All quality checks pass. All 3 PRD stories are now done.",
+      "outputs": [
+        ".github/workflows/ci.yml",
+        ".forgejo/workflows/ci.yml",
+        ".github/workflows/fuzz.yml",
+        ".forgejo/workflows/fuzz.yml",
+        ".ralphi/prd.json",
+        ".ralphi/progress.txt"
+      ],
+      "complete": true,
+      "reviewPasses": 1,
+      "trajectory": "ON_TRACK",
+      "reflectionSummary": "All 3 user stories in the ralph/l3-canon-hardening PRD are now done. US-001 expanded proptest generators; US-002 created the cargo-fuzz workspace and seed corpus; US-003 wired CI integration with a build-only fuzz step on every push and a weekly 60-second fuzzer run. No scope drift, no outstanding risks.",
+      "completedAt": "2026-04-03T04:02:36.106Z"
+    },
+    {
+      "id": "run-90a2553b",
+      "phase": "ralphi-convert",
+      "status": "completed",
+      "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "checkpointLeafId": "8e6c4423",
+      "checkpointSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "cwd": "/Users/bradmatic/Dev/geekmuse/chronicle",
+      "createdAt": "2026-04-03T04:08:28.449Z",
+      "autoConfirm": true,
+      "summary": "Converted docs/specs/004-doctor-command.md to .ralphi/prd.json. Archived the previous PRD (ralph/l3-canon-hardening) to .ralphi/archive/2026-04-03-l3-canon-hardening/prd.json. Planned and wrote 3 right-sized user stories on branch ralph/doctor-command: US-001 (CheckResult/CheckState types + all four check functions with unit tests), US-002 (DoctorArgs CLI wiring + human-readable formatter + exit codes), US-003 (--porcelain output + integration tests). Linear dependency chain: US-001 → US-002 → US-003.",
+      "outputs": [
+        ".ralphi/prd.json",
+        ".ralphi/archive/2026-04-03-l3-canon-hardening/prd.json"
+      ],
+      "complete": false,
+      "reviewPasses": 1,
+      "completedAt": "2026-04-03T04:12:40.567Z"
+    },
+    {
+      "id": "iter-b9866bc2",
+      "phase": "ralphi-loop-iteration",
+      "status": "completed",
+      "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T04-13-24-394Z_08a2ee46-661d-4ac5-9efc-c7abb00e3e20.jsonl",
+      "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T04-13-24-394Z_08a2ee46-661d-4ac5-9efc-c7abb00e3e20.jsonl",
+      "checkpointLeafId": null,
+      "checkpointSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "cwd": "/Users/bradmatic/Dev/geekmuse/chronicle",
+      "createdAt": "2026-04-03T04:13:24.394Z",
+      "autoConfirm": true,
+      "loopId": "loop-e7f6d4fb",
+      "iteration": 1,
+      "storyId": "US-001",
+      "storyTitle": "CheckResult / CheckState types and all four check functions",
+      "summary": "Implemented US-001: CheckResult/CheckState types and all four check functions.\n\nCreated src/doctor/mod.rs (~950 lines) with:\n- CheckState enum (Pass, Warn, Error, Skipped)\n- CheckResult struct (key, state, detail, hint) with concise constructor helpers\n- check_config(config_path) → 3 results: config.file, config.toml, config.remote\n- check_git(repo_path, remote_url, ssh_key_paths, check_remote closure) → 3 results with 5s TCP timeout\n- check_agents(pi_enabled, pi_dir, claude_enabled, claude_dir) → 2 results with JSONL file count\n- check_scheduler(crontab_lines, lock_path, lock_timeout_secs) → 2 results for cron and lock state\n- 23 unit tests covering all pass/warn/error/skipped branches\n- default_check_remote() and default_ssh_key_paths() for production use\n\nAll AC satisfied. Quality checks pass (432 tests with --test-threads=1; pre-existing flaky test push_merges_new_entries_with_existing_repo_content fails under parallel execution but passes in isolation). Committed as feat(doctor): US-001.",
+      "outputs": [
+        "src/doctor/mod.rs",
+        "src/lib.rs"
+      ],
+      "complete": false,
+      "reviewPasses": 1,
+      "trajectory": "ON_TRACK",
+      "reflectionSummary": "All 10 acceptance criteria satisfied. The module was placed directly in src/doctor/mod.rs (extracted from cli/mod.rs since check logic + tests exceeded the ~300-line threshold mentioned in the notes). The injectable closure pattern for check_remote cleanly enables unit testing of all network branches without a real TCP connection. 23 unit tests pass. Code style and lints are clean.",
+      "nextIterationPlan": "US-002: Wire chronicle doctor into the CLI. Add DoctorArgs { porcelain, no_color }, Doctor subcommand in main.rs/cli/mod.rs, implement doctor_impl with grouped output (Config/Git/Agents/Scheduler sections), ✓/⚠/✗ symbols, remediation hints, and summary line. Enforce exit codes 0/1/2. Reuse StatusFormatter<W> or add DoctorFormatter. Unit tests for output shapes.",
+      "completedAt": "2026-04-03T04:24:57.389Z"
+    },
+    {
+      "id": "iter-230fbbcf",
+      "phase": "ralphi-loop-iteration",
+      "status": "running",
+      "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T04-24-57-406Z_ab65377b-1cac-4cc7-8f78-f6fa28704d82.jsonl",
+      "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T04-24-57-406Z_ab65377b-1cac-4cc7-8f78-f6fa28704d82.jsonl",
+      "checkpointLeafId": null,
+      "checkpointSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "cwd": "/Users/bradmatic/Dev/geekmuse/chronicle",
+      "createdAt": "2026-04-03T04:24:57.406Z",
+      "autoConfirm": true,
+      "loopId": "loop-e7f6d4fb",
+      "iteration": 2,
+      "storyId": "US-002",
+      "storyTitle": "DoctorArgs CLI wiring and human-readable output formatter"
     }
   ],
   "loops": [
@@ -156,7 +342,7 @@
       "controllerSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
       "maxIterations": 50,
       "iteration": 4,
-      "active": true,
+      "active": false,
       "stopRequested": false,
       "createdAt": "2026-04-03T02:55:50.428Z",
       "iterationSessionFiles": [
@@ -165,9 +351,38 @@
         "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-15-48-648Z_ae226198-7ee0-45c9-9434-a04b5e910de4.jsonl",
         "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-23-02-317Z_48265cd1-bd01-4502-add2-3afffb5c6c7f.jsonl"
       ],
-      "currentIterationStartedAt": "2026-04-03T03:23:02.318Z",
-      "activeIterationSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-23-02-317Z_48265cd1-bd01-4502-add2-3afffb5c6c7f.jsonl"
+      "completedAt": "2026-04-03T03:30:22.347Z"
+    },
+    {
+      "id": "loop-5e1fd382",
+      "controllerSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "maxIterations": 50,
+      "iteration": 3,
+      "active": false,
+      "stopRequested": false,
+      "createdAt": "2026-04-03T03:37:13.732Z",
+      "iterationSessionFiles": [
+        "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-37-13-733Z_993fe93b-950f-4c21-afa9-f61be8702bbe.jsonl",
+        "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-45-37-988Z_9df89733-941b-4c01-83f5-baace3c3c251.jsonl",
+        "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-59-38-342Z_2554a176-c6c1-493d-ad73-ecf365ff489c.jsonl"
+      ],
+      "completedAt": "2026-04-03T04:02:36.124Z"
+    },
+    {
+      "id": "loop-e7f6d4fb",
+      "controllerSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "maxIterations": 50,
+      "iteration": 2,
+      "active": true,
+      "stopRequested": false,
+      "createdAt": "2026-04-03T04:13:24.393Z",
+      "iterationSessionFiles": [
+        "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T04-13-24-394Z_08a2ee46-661d-4ac5-9efc-c7abb00e3e20.jsonl",
+        "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T04-24-57-406Z_ab65377b-1cac-4cc7-8f78-f6fa28704d82.jsonl"
+      ],
+      "currentIterationStartedAt": "2026-04-03T04:24:57.406Z",
+      "activeIterationSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T04-24-57-406Z_ab65377b-1cac-4cc7-8f78-f6fa28704d82.jsonl"
     }
   ],
-  "savedAt": "2026-04-03T03:23:02.318Z"
+  "savedAt": "2026-04-03T04:24:57.407Z"
 }

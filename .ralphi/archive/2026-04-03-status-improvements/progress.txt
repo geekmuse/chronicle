@@ -1,0 +1,77 @@
+## Codebase Patterns
+- `prop_assert_eq!` (proptest macro) does NOT support implicit `{var}` capture in its format string argument — use explicit positional form `"msg {}", var` instead.
+- `prop_oneof!` boxes all branches internally, so mixing `&str` (regex) strategies with `prop_map` results in one block is fine; no manual `.boxed()` needed.
+- `Just(String::from("..."))` is idiomatic for generating a single fixed string value in a proptest strategy.
+- When building JSON for proptest round-trips, prefer `serde_json::json!({...})` + `to_string` over raw `format!` strings — it handles escaping of special chars (e.g. `"` in XML attributes) transparently.
+- Pre-commit hook (`prek`) stashes unstaged changes and runs the full test suite; a known lock-file race in `push_merges_new_entries_with_existing_repo_content` occasionally fires under parallel execution — passes in isolation.
+- `serde_json` Object uses BTreeMap (alphabetical key order). Any fuzz target or proptest that compares JSON strings after parse→serialize must pre-normalise inputs or it will see spurious key-order failures.
+- `serde_json` float serialisation is non-idempotent for some large numeric literals; double-normalise and skip non-idempotent inputs in fuzz targets.
+- cargo-fuzz binary targets require `libfuzzer-sys` in `[dependencies]`, NOT `[dev-dependencies]`; fuzz workspace must have `[workspace]` + `.gitignore` covering `target/` and `artifacts/`.
+---
+
+## PRD Run Context
+PRD Branch: ralph/l3-canon-hardening
+Started: 2026-04-03T03:37:13.732Z
+---
+
+## 2026-04-03 - US-001
+Session: N/A
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Replaced `arb_subpath()` with a richer version covering plain, space, and dot components up to 8 deep.
+- Added `arb_home_path()` generating plain/dot/hyphen/space usernames with both `/Users` and `/home` roots.
+- Added `prop_l3_content_templates` proptest: six templates (path-only, mid-sentence, same-twice, two-subpaths, XML-attr, URL-then-path).
+- Added `roundtrip_deeply_nested_json` proptest: 4-level deep JSON with two leaf home-paths, level-3 canon.
+- Added `roundtrip_array_of_strings` proptest: JSON array of 1–5 home-path strings, level-3 canon.
+- All 409 tests pass; clippy, fmt, deny clean. Commit: 3d4e3cc.
+- Files changed: src/canon/levels.rs (test block only)
+- **Learnings for future iterations:**
+  - `prop_assert_eq!` macro does not support implicit captures — use positional args.
+  - `serde_json::json!` is the cleanest way to build test JSON with special chars.
+  - Pre-commit hook parallelism can cause lock-file flake; retry usually succeeds.
+---
+
+## 2026-04-03 - US-002
+Session: N/A
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Created fuzz/ sub-workspace as a standalone cargo workspace (not in root workspace members).
+- fuzz/Cargo.toml: libfuzzer-sys + serde_json in [dependencies], chronicle via path, arbitrary in [dev-dependencies].
+- fuzz/fuzz_targets/fuzz_roundtrip.rs: interprets raw bytes as (home_path_len_byte, level_byte, home_path, json_line); builds TokenRegistry; asserts decanon(canon(input, level)) == input.
+- Two correctness subtleties discovered during live fuzzing and fixed:
+  1. serde_json BTreeMap key ordering: JSON must be double-normalised so key order is stable before round-trip comparison.
+  2. serde_json float non-idempotency: large integer literals (e.g. 33333...e+31) serialise differently across two passes; fixed by filtering to JSON objects only and double-normalising.
+- fuzz/corpus/fuzz_roundtrip/seed_simple.bin: L2 seed with /Users/testuser/Dev/project.
+- fuzz/corpus/fuzz_roundtrip/seed_claude.bin: L3 seed with /Users/testuser and sanitised Claude session JSONL.
+- fuzz/.gitignore: excludes fuzz/target and fuzz/artifacts.
+- cargo +nightly fuzz build: passes; 10-second seed run: ~1M executions, zero crashes.
+- Commit: 7782293
+- Files changed: fuzz/.gitignore, fuzz/Cargo.lock, fuzz/Cargo.toml, fuzz/corpus/fuzz_roundtrip/seed_simple.bin, fuzz/corpus/fuzz_roundtrip/seed_claude.bin, fuzz/fuzz_targets/fuzz_roundtrip.rs
+- **Learnings for future iterations:**
+  - cargo-fuzz requires libfuzzer-sys in [dependencies] (not [dev-dependencies]) for binary targets — the PRD spec was incorrect about this.
+  - serde_json's Object type uses BTreeMap (alphabetical key order); fuzz targets testing JSON round-trips must pre-normalise inputs.
+  - serde_json float serialisation is NOT always idempotent across two parse→serialize passes for certain numeric literals. Use a double-normalisation guard to filter out affected inputs.
+  - The fuzz/ workspace must have its own [workspace] section and a .gitignore covering target/ and artifacts/ to avoid committing hundreds of corpus files.
+---
+
+## 2026-04-03 - US-003
+Session: N/A
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Added `fuzz-build` job to `.github/workflows/ci.yml`: installs nightly toolchain, installs cargo-fuzz, runs `cargo +nightly fuzz build fuzz_roundtrip` (build only, no fuzzer execution).
+- Added `fuzz-build` job to `.forgejo/workflows/ci.yml`: mirrors GitHub job using unpinned action refs matching existing Forgejo style.
+- Created `.github/workflows/fuzz.yml`: scheduled workflow (cron `'0 2 * * 0'`, every Sunday 02:00 UTC) + `workflow_dispatch`; installs nightly Rust and cargo-fuzz; runs `cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=60`. libFuzzer exits non-zero on any crash so the workflow fails automatically.
+- Created `.forgejo/workflows/fuzz.yml`: mirrors the GitHub fuzz workflow.
+- Files changed: .github/workflows/ci.yml, .forgejo/workflows/ci.yml, .github/workflows/fuzz.yml (new), .forgejo/workflows/fuzz.yml (new)
+- All quality checks pass: cargo test, clippy, fmt --check, deny check. Commit: 0ce0b6d.
+- **Learnings for future iterations:**
+  - `cargo +nightly fuzz build` / `fuzz run` are invoked from the **project root** (parent of `fuzz/`), not from inside the fuzz/ workspace directory.
+  - For nightly-only CI jobs, use `dtolnay/rust-toolchain@nightly` (no hash pin needed since nightly is inherently floating).
+  - The scheduled fuzz workflow does not need explicit failure logic — libFuzzer returns exit code 77 on crash, which GitHub/Forgejo treat as workflow failure.
+---

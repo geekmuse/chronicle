@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use crate::canon::levels::L3_WARNING;
 use crate::canon::TokenRegistry;
 use crate::config::{self, schema::HistoryMode, CliOverrides};
+use crate::doctor;
 use crate::errors;
 use crate::git;
 use crate::materialize_cache::{MaterializeCache, MaterializeFileState};
@@ -2152,6 +2153,43 @@ impl<W: io::Write> StatusFormatter<W> {
             Ok(())
         }
     }
+
+    /// Emit a section header line (non-porcelain only).
+    pub fn section_header(&mut self, name: &str) -> io::Result<()> {
+        if self.porcelain {
+            return Ok(());
+        }
+        writeln!(self.writer, "{name}")
+    }
+
+    /// Emit an indented remediation hint (non-porcelain only).
+    pub fn hint_line(&mut self, text: &str) -> io::Result<()> {
+        if self.porcelain {
+            return Ok(());
+        }
+        writeln!(self.writer, "  \u{2192} {text}")
+    }
+
+    /// Emit `-  label: detail` for skipped checks (non-porcelain only).
+    pub fn skipped_check(&mut self, label: &str, detail: &str) -> io::Result<()> {
+        if self.porcelain {
+            return Ok(());
+        }
+        writeln!(self.writer, "-  {label}: {detail}")
+    }
+
+    /// Emit a blank line (non-porcelain only).
+    pub fn blank_line(&mut self) -> io::Result<()> {
+        if self.porcelain {
+            return Ok(());
+        }
+        writeln!(self.writer)
+    }
+
+    /// Write a raw line to the underlying writer (always, regardless of mode).
+    pub fn raw_line(&mut self, text: &str) -> io::Result<()> {
+        writeln!(self.writer, "{text}")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2581,6 +2619,212 @@ fn emit_lock_state_section<W: io::Write>(
         fmt.kv("lock_state", "held")?;
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// chronicle doctor
+// ---------------------------------------------------------------------------
+
+/// Arguments for `chronicle doctor`.
+#[derive(Debug, Default, Clone)]
+pub struct DoctorArgs {
+    /// Emit stable machine-readable output; no symbols or color.
+    /// (Full porcelain format implemented in US-003; currently implies --no-color.)
+    pub porcelain: bool,
+    /// Suppress ANSI color even when stdout is a TTY.
+    pub no_color: bool,
+}
+
+/// Internal struct holding all four doctor check-group results.
+struct DoctorCheckResults {
+    config: Vec<doctor::CheckResult>,
+    git: Vec<doctor::CheckResult>,
+    agents: Vec<doctor::CheckResult>,
+    scheduler: Vec<doctor::CheckResult>,
+}
+
+/// Handle `chronicle doctor [--porcelain] [--no-color]`.
+///
+/// Exit codes: 0 = all checks pass, 1 = warnings only, 2 = any error.
+pub fn handle_doctor(args: DoctorArgs) -> Result<()> {
+    let config_path = config::default_config_path();
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    // --porcelain implies --no-color.
+    let use_color = should_use_color(args.no_color || args.porcelain);
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let exit_code = doctor_write(&args, &config_path, &home, use_color, &mut out)?;
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+    Ok(())
+}
+
+/// Testable core of `handle_doctor` — accepts injected paths, writes to stdout.
+///
+/// Returns the exit code: 0 = all pass, 1 = warnings only, 2 = any error.
+pub fn doctor_impl(args: &DoctorArgs, config_path: &Path, home: &Path) -> Result<i32> {
+    let use_color = should_use_color(args.no_color || args.porcelain);
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    doctor_write(args, config_path, home, use_color, &mut out)
+}
+
+/// Inner doctor implementation that writes to any [`io::Write`] — used in
+/// tests to capture output.
+///
+/// Returns the exit code: 0 = all pass, 1 = warnings only, 2 = any error.
+pub fn doctor_write<W: io::Write>(
+    args: &DoctorArgs,
+    config_path: &Path,
+    home: &Path,
+    use_color: bool,
+    writer: &mut W,
+) -> Result<i32> {
+    let results = run_doctor_checks(config_path, home);
+    format_doctor_results(args, &results, use_color, writer).map_err(anyhow::Error::from)
+}
+
+/// Run all four doctor check groups and return results.
+///
+/// May have side effects: filesystem access, network call, crontab read.
+fn run_doctor_checks(config_path: &Path, home: &Path) -> DoctorCheckResults {
+    let config = doctor::check_config(config_path);
+
+    let (git, agents, scheduler) = match config::load(Some(config_path), &CliOverrides::default()) {
+        Ok(cfg) => {
+            let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
+            let remote_url = cfg.storage.remote_url.clone();
+            let ssh_key_paths = doctor::default_ssh_key_paths(home);
+
+            let git = doctor::check_git(
+                &repo_path,
+                &remote_url,
+                &ssh_key_paths,
+                doctor::default_check_remote,
+            );
+
+            let pi_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
+            let claude_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
+            let agents = doctor::check_agents(
+                cfg.agents.pi.enabled,
+                &pi_dir,
+                cfg.agents.claude.enabled,
+                &claude_dir,
+            );
+
+            let crontab_lines = scheduler_cron::crontab_read().unwrap_or_default();
+            let lock_path = lock_file_path(&repo_path);
+            let scheduler =
+                doctor::check_scheduler(&crontab_lines, &lock_path, cfg.general.lock_timeout_secs);
+
+            (git, agents, scheduler)
+        }
+        Err(_) => {
+            let skip = |key: &str| doctor::CheckResult::skipped(key, "config unavailable");
+            (
+                vec![skip("git.repo"), skip("git.remote"), skip("git.ssh_key")],
+                vec![skip("agents.pi"), skip("agents.claude")],
+                vec![skip("scheduler.cron"), skip("scheduler.lock")],
+            )
+        }
+    };
+
+    DoctorCheckResults {
+        config,
+        git,
+        agents,
+        scheduler,
+    }
+}
+
+/// Format and emit doctor check results to `writer`.
+///
+/// Pure function (no I/O side effects beyond writing) — called directly by
+/// unit tests with injected [`DoctorCheckResults`].
+///
+/// Returns the exit code: 0 = all pass, 1 = warnings only, 2 = any error.
+fn format_doctor_results<W: io::Write>(
+    _args: &DoctorArgs,
+    results: &DoctorCheckResults,
+    use_color: bool,
+    writer: &mut W,
+) -> io::Result<i32> {
+    // Always emit human-readable output for US-002.
+    // --porcelain machine-readable format is implemented in US-003.
+    let mut fmt = StatusFormatter::new(writer, use_color, false);
+
+    emit_doctor_section(&mut fmt, "Config", &results.config)?;
+    emit_doctor_section(&mut fmt, "Git", &results.git)?;
+    emit_doctor_section(&mut fmt, "Agents", &results.agents)?;
+    emit_doctor_section(&mut fmt, "Scheduler", &results.scheduler)?;
+
+    // Compute summary counts (Skipped is excluded from all buckets).
+    let all: Vec<&doctor::CheckResult> = results
+        .config
+        .iter()
+        .chain(results.git.iter())
+        .chain(results.agents.iter())
+        .chain(results.scheduler.iter())
+        .collect();
+
+    let errors = all
+        .iter()
+        .filter(|r| r.state == doctor::CheckState::Error)
+        .count();
+    let warnings = all
+        .iter()
+        .filter(|r| r.state == doctor::CheckState::Warn)
+        .count();
+    let passed = all
+        .iter()
+        .filter(|r| r.state == doctor::CheckState::Pass)
+        .count();
+
+    fmt.raw_line(&format!(
+        "{errors} errors \u{00b7} {warnings} warnings \u{00b7} {passed} checks passed"
+    ))?;
+
+    Ok(if errors > 0 {
+        2
+    } else if warnings > 0 {
+        1
+    } else {
+        0
+    })
+}
+
+/// Emit one doctor section: header, check lines, trailing blank line.
+fn emit_doctor_section<W: io::Write>(
+    fmt: &mut StatusFormatter<W>,
+    name: &str,
+    results: &[doctor::CheckResult],
+) -> io::Result<()> {
+    fmt.section_header(name)?;
+    for result in results {
+        match result.state {
+            doctor::CheckState::Pass => {
+                fmt.ok(&result.key, &result.detail)?;
+            }
+            doctor::CheckState::Warn => {
+                fmt.warn(&result.key, &result.detail)?;
+                if let Some(hint) = &result.hint {
+                    fmt.hint_line(hint)?;
+                }
+            }
+            doctor::CheckState::Error => {
+                fmt.err(&result.key, &result.detail)?;
+                if let Some(hint) = &result.hint {
+                    fmt.hint_line(hint)?;
+                }
+            }
+            doctor::CheckState::Skipped => {
+                fmt.skipped_check(&result.key, &result.detail)?;
+            }
+        }
+    }
+    fmt.blank_line()?;
     Ok(())
 }
 
@@ -6111,5 +6355,139 @@ mod tests {
             result.is_ok(),
             "status_impl must return Ok even when config is missing; got: {result:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // doctor
+    // -----------------------------------------------------------------------
+
+    /// Build a `DoctorCheckResults` where every check passes (except
+    /// `git.ssh_key` which is `Skipped` because the remote is HTTPS).
+    fn make_all_pass_results() -> DoctorCheckResults {
+        DoctorCheckResults {
+            config: vec![
+                doctor::CheckResult::pass("config.file", "found at /test/config.toml"),
+                doctor::CheckResult::pass("config.toml", "valid"),
+                doctor::CheckResult::pass("config.remote", "https://github.com/user/repo.git"),
+            ],
+            git: vec![
+                doctor::CheckResult::pass("git.repo", "initialized at /test/repo"),
+                doctor::CheckResult::pass("git.remote", "reachable"),
+                doctor::CheckResult::skipped("git.ssh_key", "HTTPS remote"),
+            ],
+            agents: vec![
+                doctor::CheckResult::pass("agents.pi", "5 session file(s) in /test/pi"),
+                doctor::CheckResult::pass("agents.claude", "3 session file(s) in /test/claude"),
+            ],
+            scheduler: vec![
+                doctor::CheckResult::pass("scheduler.cron", "installed"),
+                doctor::CheckResult::pass("scheduler.lock", "free"),
+            ],
+        }
+    }
+
+    #[test]
+    fn doctor_all_pass_output_has_section_headers_and_summary() {
+        let results = make_all_pass_results();
+        let args = DoctorArgs::default();
+        let mut buf = Vec::new();
+        let code = format_doctor_results(&args, &results, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert_eq!(code, 0, "all-pass exit code must be 0");
+        assert!(
+            out.contains("Config\n"),
+            "output must have Config header; got: {out}"
+        );
+        assert!(
+            out.contains("Git\n"),
+            "output must have Git header; got: {out}"
+        );
+        assert!(
+            out.contains("Agents\n"),
+            "output must have Agents header; got: {out}"
+        );
+        assert!(
+            out.contains("Scheduler\n"),
+            "output must have Scheduler header; got: {out}"
+        );
+        // 9 passed: 3 config + 2 git (repo, remote) + 2 agents + 2 scheduler;
+        // git.ssh_key is Skipped (not counted).
+        assert!(
+            out.contains("0 errors \u{00b7} 0 warnings \u{00b7} 9 checks passed"),
+            "summary line wrong; got: {out}"
+        );
+    }
+
+    #[test]
+    fn doctor_single_error_shows_symbol_hint_and_exits_2() {
+        let mut results = make_all_pass_results();
+        results.config[2] = doctor::CheckResult::error(
+            "config.remote",
+            "remote URL not configured",
+            "run `chronicle init --remote <url>`",
+        );
+        let args = DoctorArgs::default();
+        let mut buf = Vec::new();
+        let code = format_doctor_results(&args, &results, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert_eq!(code, 2, "any error \u{2192} exit code 2");
+        assert!(
+            out.contains("\u{2717}  config.remote"),
+            "must show \u{2717} for error; got: {out}"
+        );
+        assert!(
+            out.contains("\u{2192} run `chronicle init --remote"),
+            "must show hint; got: {out}"
+        );
+        // config.remote moved from Pass to Error: 8 passed, 1 error.
+        assert!(
+            out.contains("1 errors \u{00b7} 0 warnings \u{00b7} 8 checks passed"),
+            "summary counts wrong; got: {out}"
+        );
+    }
+
+    #[test]
+    fn doctor_warning_only_shows_symbol_and_exits_1() {
+        let mut results = make_all_pass_results();
+        results.scheduler[0] = doctor::CheckResult::warn(
+            "scheduler.cron",
+            "not installed",
+            "run `chronicle schedule install`",
+        );
+        let args = DoctorArgs::default();
+        let mut buf = Vec::new();
+        let code = format_doctor_results(&args, &results, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert_eq!(code, 1, "warnings-only \u{2192} exit code 1");
+        assert!(
+            out.contains("\u{26a0}  scheduler.cron"),
+            "must show \u{26a0} for warning; got: {out}"
+        );
+        // scheduler.cron moved from Pass to Warn: 8 passed, 1 warning.
+        assert!(
+            out.contains("0 errors \u{00b7} 1 warnings \u{00b7} 8 checks passed"),
+            "summary counts wrong; got: {out}"
+        );
+    }
+
+    #[test]
+    fn doctor_summary_skipped_not_counted_as_passed() {
+        // git.ssh_key is Skipped in make_all_pass_results — ensure it does not
+        // appear in the `passed` bucket of the summary line.
+        let results = make_all_pass_results();
+        let args = DoctorArgs::default();
+        let mut buf = Vec::new();
+        let code = format_doctor_results(&args, &results, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        // Total = 10 checks; 1 Skipped; 9 Pass.
+        assert!(
+            out.contains("0 errors \u{00b7} 0 warnings \u{00b7} 9 checks passed"),
+            "skipped must not count as passed; got: {out}"
+        );
+        assert_eq!(code, 0);
     }
 }

@@ -67,6 +67,16 @@ enum Commands {
         no_color: bool,
     },
 
+    /// Run a structured pre-flight health check across all subsystems.
+    Doctor {
+        /// Emit stable machine-readable output; no symbols or color.
+        #[arg(long)]
+        porcelain: bool,
+        /// Suppress ANSI color even when stdout is a TTY.
+        #[arg(long)]
+        no_color: bool,
+    },
+
     /// Display the error ring buffer.
     Errors {
         /// Maximum number of entries to display (default: 30).
@@ -114,6 +124,13 @@ fn main() -> Result<()> {
             no_color,
         } => cli::handle_status(cli::StatusArgs {
             verbose,
+            porcelain,
+            no_color,
+        }),
+        Commands::Doctor {
+            porcelain,
+            no_color,
+        } => cli::handle_doctor(cli::DoctorArgs {
             porcelain,
             no_color,
         }),
