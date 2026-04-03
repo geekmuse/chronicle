@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.8.4) — overrides GITHUB_REF_NAME when dispatched manually'
+        required: true
+        default: ''
 
 permissions: read-all
 
@@ -70,7 +75,7 @@ jobs:
       - name: Package binary
         shell: bash
         run: |
-          TAG=${GITHUB_REF_NAME}
+          TAG=${{ github.event.inputs.tag || github.ref_name }}
           BINARY=target/${{ matrix.target }}/release/${{ matrix.artifact }}
           ARCHIVE=chronicle-${TAG}-${{ matrix.target }}.tar.gz
           tar -czf "$ARCHIVE" -C "$(dirname "$BINARY")" "$(basename "$BINARY")"
@@ -104,7 +109,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          TAG=${GITHUB_REF_NAME}
+          TAG=${{ github.event.inputs.tag || github.ref_name }}
           VERSION=${TAG#v}
           NOTES=$(awk "/^## \[$VERSION\]/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md)
           PRERELEASE_FLAG=""
