@@ -1,0 +1,548 @@
+{
+  "project": "chronicle",
+  "branchName": "ralph/initial-delivery",
+  "description": "Bidirectional sync tool for Pi and Claude Code session history across machines using path canonicalization and Git as storage/transport backend",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Project scaffolding, error types, and CLI skeleton",
+      "description": "Set up the Rust project foundation: Cargo.toml with all dependencies (clap, serde, serde_json, toml, git2, chrono, dirs, uuid, rand, tracing, thiserror, anyhow), module directory structure with mod.rs files for all modules (cli, config, canon, merge, git, agents, scheduler, errors, scan), main.rs with clap CLI skeleton defining all commands (init, import, sync, push, pull, status, errors, config, schedule) with handler stubs returning Ok, and thiserror error types covering all error categories (push_conflict, malformed_line, prefix_mismatch, canonicalization_error, git_error, io_error, disk_full).",
+      "acceptanceCriteria": [
+        "Cargo.toml compiles with all listed dependencies",
+        "All module directories exist with mod.rs files",
+        "main.rs parses all CLI commands via clap (handler stubs print 'not implemented' and return Ok)",
+        "Error types defined with thiserror for all 7 categories from \u00a711.1",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes (no tests yet is acceptable)",
+        "cargo fmt --check passes"
+      ],
+      "priority": 1,
+      "status": "done",
+      "dependsOn": [],
+      "notes": "",
+      "startedAt": "2026-03-29T02:25:06.258Z",
+      "updatedAt": "2026-03-29T03:59:27.182Z",
+      "completedAt": "2026-03-29T03:59:27.182Z"
+    },
+    {
+      "id": "US-002",
+      "title": "Config schema, loading, validation, and machine name generator",
+      "description": "Implement the full configuration system per \u00a78. Define serde structs for the complete config.toml schema (general, notifications, storage, canonicalization, agents, sync sections). Implement TOML loading with sensible defaults, environment variable overrides (CHRONICLE_REPO_PATH, CHRONICLE_REMOTE_URL, CHRONICLE_SYNC_INTERVAL), CLI flag overrides, and the precedence chain (CLI > env > file > defaults). Use XDG-compliant path resolution via the dirs crate. Implement the adjective-animal machine name generator (\u00a78.4) with a curated word list.",
+      "acceptanceCriteria": [
+        "Config struct covers all fields from \u00a78.2",
+        "Loading from TOML file works with all sections",
+        "Missing config file produces sensible defaults",
+        "Environment variables override config file values",
+        "Precedence chain: CLI > env > file > defaults verified by unit tests",
+        "XDG_CONFIG_HOME respected for config path",
+        "Machine name generator produces adjective-animal names (e.g., cheerful-chinchilla)",
+        "Unit tests for config loading, defaults, env overrides, and name generation",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 2,
+      "status": "done",
+      "dependsOn": [
+        "US-001"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T03:59:27.304Z",
+      "updatedAt": "2026-03-29T04:10:38.252Z",
+      "completedAt": "2026-03-29T04:10:38.252Z"
+    },
+    {
+      "id": "US-003",
+      "title": "Agent directory encoding (Pi and Claude)",
+      "description": "Implement Pi and Claude agent-specific directory encoding and decoding per \u00a74.4. Pi uses --encoded-- format (leading / stripped, all / replaced with -). Claude uses -encoded format (leading / stripped, all / and . replaced with -). Both must support round-trip encode/decode. Include schema knowledge for each agent's session directory structure.",
+      "acceptanceCriteria": [
+        "Pi encode: /Users/bradmatic/Dev/foo \u2192 --Users-bradmatic-Dev-foo--",
+        "Pi decode: --Users-bradmatic-Dev-foo-- \u2192 /Users/bradmatic/Dev/foo",
+        "Claude encode: /Users/bradmatic/Dev/foo \u2192 -Users-bradmatic-Dev-foo",
+        "Claude decode: -Users-bradmatic-Dev-foo \u2192 /Users/bradmatic/Dev/foo",
+        "Round-trip tests pass for both agents with various path inputs",
+        "Edge cases handled: paths with dots (Claude), deeply nested paths",
+        "Agent trait or module exposes session_dir, encode_dir, decode_dir",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 3,
+      "status": "done",
+      "dependsOn": [
+        "US-001"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T04:10:38.415Z",
+      "updatedAt": "2026-03-29T04:52:12.693Z",
+      "completedAt": "2026-03-29T04:52:12.693Z"
+    },
+    {
+      "id": "US-004",
+      "title": "Token registry and L1 path canonicalization",
+      "description": "Implement the token registry (\u00a74.1, \u00a74.6) managing SYNC_HOME and custom tokens. Implement L1 path canonicalization (\u00a74.4) which transforms file and directory paths by replacing the encoded home path prefix with the token form. Token ordering: custom tokens applied after SYNC_HOME during canonicalization, before SYNC_HOME during de-canonicalization. Path-boundary matching must avoid partial matches (e.g., /Users/bradmatic2 must NOT match /Users/bradmatic).",
+      "acceptanceCriteria": [
+        "Token registry holds SYNC_HOME and accepts custom tokens from config",
+        "L1 canonicalization replaces home path prefix in directory names for both Pi and Claude encodings",
+        "L1 de-canonicalization reverses the transform with the local machine's home path",
+        "Custom tokens applied in correct order (after SYNC_HOME for canon, before for decanon)",
+        "Path-boundary matching: /Users/bradmatic2 is NOT matched when home is /Users/bradmatic",
+        "Unit tests for token ordering, boundary matching, and round-trip",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 4,
+      "status": "done",
+      "dependsOn": [
+        "US-002",
+        "US-003"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T04:52:12.791Z",
+      "updatedAt": "2026-03-29T04:59:39.821Z",
+      "completedAt": "2026-03-29T04:59:39.821Z"
+    },
+    {
+      "id": "US-005",
+      "title": "L2 field canonicalization, L3 freeform, and de-canonicalization",
+      "description": "Implement L2 structured field canonicalization (\u00a74.3): walk whitelisted JSON field paths (cwd, path, file_path, message.cwd, arguments.path, arguments.file_path, arguments.command) and replace values starting with $HOME. Implement L3 freeform text canonicalization (\u00a74.2) as opt-in with startup warning. Implement full de-canonicalization reversing L1, L2, and L3 transforms. Verify the round-trip invariant (\u00a74.7): decanon(canon(content, A), A) == content.",
+      "acceptanceCriteria": [
+        "L2 canonicalizes only whitelisted JSON field paths",
+        "Only string values starting with $HOME/ or equal to $HOME are replaced",
+        "Non-path strings, UUIDs, and entry IDs are never touched",
+        "L3 scans all string content when level=3, emits startup warning",
+        "De-canonicalization reverses L1+L2+L3 with local home path",
+        "Round-trip invariant holds: decanon(canon(x, A), A) == x for all levels",
+        "Custom token nesting works (SYNC_PROJECTS under SYNC_HOME)",
+        "Unit tests for each level, field whitelist, round-trip, and edge cases",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 5,
+      "status": "done",
+      "dependsOn": [
+        "US-004"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T04:59:40.075Z",
+      "updatedAt": "2026-03-29T14:02:32.143Z",
+      "completedAt": "2026-03-29T14:02:32.143Z"
+    },
+    {
+      "id": "US-006",
+      "title": "JSONL entry parsing and grow-only set merge",
+      "description": "Implement JSONL entry parsing (\u00a75.1): parse each line as a JSON object, extract composite identity key (type + id), detect session headers (type=session). Implement the grow-only set merge algorithm (\u00a75.2): parse both files into entry sets, compute union, order results (header first, then by timestamp ascending, stable sort with remote-first determinism). Handle malformed lines (\u00a75.5): skip unparseable lines, log warning with file path and line number, continue processing.",
+      "acceptanceCriteria": [
+        "Entry identity correctly uses (type, id) composite key",
+        "Session header identified by type=session (exactly one per file)",
+        "Set-union merge produces union of both entry sets",
+        "Merged output: header first, then entries sorted by timestamp ascending",
+        "Stable sort: identical timestamps preserve order (remote entries first)",
+        "Malformed lines are skipped with warning (file path, line number, snippet)",
+        "Merge of two empty files produces empty output",
+        "Merge with one-sided input (new file) returns that file's entries",
+        "Unit tests for all merge scenarios from \u00a75.3",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 6,
+      "status": "done",
+      "dependsOn": [
+        "US-001"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T14:02:32.981Z",
+      "updatedAt": "2026-03-29T14:11:14.917Z",
+      "completedAt": "2026-03-29T14:11:14.917Z"
+    },
+    {
+      "id": "US-007",
+      "title": "Merge prefix verification and conflict resolution",
+      "description": "Implement prefix verification (\u00a75.4): before merging, verify that common entries (present in both versions) are byte-identical after canonicalization. If they differ, log a detailed warning identifying the file and mismatched entries, proceed with remote-version-wins, and record the incident in the error ring buffer. Integrate with the error ring buffer interface (can use a trait/callback for now if ring buffer isn't built yet).",
+      "acceptanceCriteria": [
+        "Common entries (same type+id in both files) are verified byte-identical",
+        "Mismatched common entries: detailed warning logged with file path and entry details",
+        "Remote-version-wins applied for conflicting entries",
+        "Incident recorded via error reporting interface (trait or callback)",
+        "Non-conflicting entries unaffected by verification",
+        "Unit tests: identical prefix passes, divergent prefix triggers warning and uses remote",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 7,
+      "status": "done",
+      "dependsOn": [
+        "US-006"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T14:11:14.987Z",
+      "updatedAt": "2026-03-29T14:20:16.388Z",
+      "completedAt": "2026-03-29T14:20:16.388Z"
+    },
+    {
+      "id": "US-008",
+      "title": "Error ring buffer",
+      "description": "Implement the 30-entry error ring buffer (\u00a711.1) stored as JSONL at ~/.local/share/chronicle/errors.jsonl. Each entry includes timestamp, severity, category, file, message, and detail fields. Support all error categories: push_conflict, malformed_line, prefix_mismatch, canonicalization_error, git_error, io_error, disk_full. Implement append (with rotation at 30 entries), read (with optional limit), and clear operations.",
+      "acceptanceCriteria": [
+        "Ring buffer stored at XDG-compliant path (~/.local/share/chronicle/errors.jsonl)",
+        "Each entry contains: timestamp, severity, category, file, message, detail",
+        "Buffer rotates at 30 entries (oldest dropped)",
+        "All 7 error categories supported",
+        "Read with optional --limit N returns last N entries",
+        "Append is atomic (no partial writes on crash)",
+        "Unit tests for append, rotation, read with limit, and all categories",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 8,
+      "status": "done",
+      "dependsOn": [
+        "US-001"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T14:20:16.521Z",
+      "updatedAt": "2026-03-29T14:26:11.278Z",
+      "completedAt": "2026-03-29T14:26:11.278Z"
+    },
+    {
+      "id": "US-009",
+      "title": "File change scanner",
+      "description": "Implement file change detection (\u00a714.1) using mtime and file size comparison against a cached state. Maintain state.json at ~/.local/share/chronicle/state.json tracking local_mtime, local_size, last_synced_size, and local_path per file. On first run (no cache), all files are considered changed. Support scanning configured agent session directories for .jsonl files, respecting the follow_symlinks config option (\u00a712).",
+      "acceptanceCriteria": [
+        "Scanner detects new files (not in cache)",
+        "Scanner detects modified files (mtime or size changed)",
+        "Scanner ignores unchanged files (mtime and size match cache)",
+        "state.json persisted at XDG-compliant path",
+        "First run with no cache treats all files as changed",
+        "Symlinks refused when follow_symlinks=false (error logged)",
+        "Symlinks followed when follow_symlinks=true (warning logged)",
+        "Unit tests for new/modified/unchanged detection and symlink policy",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 9,
+      "status": "done",
+      "dependsOn": [
+        "US-002"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T14:26:11.328Z",
+      "updatedAt": "2026-03-29T14:34:17.872Z",
+      "completedAt": "2026-03-29T14:34:17.872Z"
+    },
+    {
+      "id": "US-010",
+      "title": "Git repo management (init and working tree)",
+      "description": "Implement git repo management via git2 (\u00a76.1\u20136.3). Support initializing a new bare repo at the configured repo_path, setting up the working tree with the canonical directory structure (pi/sessions/, claude/projects/, .chronicle/), and managing the manifest.json metadata file. Handle the case where the repo already exists (open instead of re-init).",
+      "acceptanceCriteria": [
+        "Git repo initialized at configured repo_path via git2",
+        "Repo opened without error if it already exists",
+        "Working tree has canonical structure: pi/sessions/, claude/projects/, .chronicle/",
+        "manifest.json created with version, machines map",
+        "Remote URL configured on the repo",
+        "Unit tests for init, open-existing, and directory structure",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 10,
+      "status": "done",
+      "dependsOn": [
+        "US-002"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T14:34:17.947Z",
+      "updatedAt": "2026-03-29T14:40:32.275Z",
+      "completedAt": "2026-03-29T14:40:32.275Z"
+    },
+    {
+      "id": "US-011",
+      "title": "Git fetch/push with retry and backoff",
+      "description": "Implement git fetch and push operations via git2 (\u00a76.5). Push includes retry logic with exponential backoff: 3 retries at 0s, 5s, 25s intervals. On push rejection (remote advanced), retry the full fetch\u2192merge\u2192commit\u2192push cycle. After 3 failures, log error to the ring buffer and exit gracefully. Handle network failures (\u00a711.3): log error, skip cycle, let cron retry.",
+      "acceptanceCriteria": [
+        "git fetch from configured remote via git2",
+        "git push to configured remote via git2",
+        "Push retry with exponential backoff: 0s, 5s, 25s (3 max retries)",
+        "Push rejection triggers fetch\u2192re-merge\u2192commit\u2192push retry",
+        "After 3 failures: error logged to ring buffer, exits gracefully",
+        "Network failure: logged, cycle skipped (no immediate retry)",
+        "Unit tests for retry logic and backoff timing",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 11,
+      "status": "done",
+      "dependsOn": [
+        "US-010"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T14:40:32.298Z",
+      "updatedAt": "2026-03-29T16:21:04.857Z",
+      "completedAt": "2026-03-29T16:21:04.857Z"
+    },
+    {
+      "id": "US-012",
+      "title": "Git commit formatting and staging",
+      "description": "Implement git staging and commit formatting via git2 (\u00a76.4). Support two commit formats: sync commits (sync: machine @ timestamp, with +N/~N file counts per agent) and import commits (import: agent sessions (machine), with file count). Use the machine name from config as the git committer name with chronicle@local as email.",
+      "acceptanceCriteria": [
+        "Files staged via git2 add",
+        "Sync commit format: 'sync: machine @ ISO-timestamp' with +N/~N body",
+        "Import commit format: 'import: agent sessions (machine)' with file count body",
+        "Committer name = machine_name from config, email = chronicle@local",
+        "No commit created if no staged changes (idempotent)",
+        "Unit tests for commit message formatting",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 12,
+      "status": "done",
+      "dependsOn": [
+        "US-010",
+        "US-002"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T16:21:04.931Z",
+      "updatedAt": "2026-03-29T16:26:22.972Z",
+      "completedAt": "2026-03-29T16:26:22.972Z"
+    },
+    {
+      "id": "US-013",
+      "title": "CLI init command",
+      "description": "Implement the chronicle init command (\u00a79.1). Creates ~/.config/chronicle/config.toml with defaults, generates a machine name via the adjective-animal generator, initializes the local git repo at repo_path, and prompts for remote_url if not provided via flag. Does NOT import existing files.",
+      "acceptanceCriteria": [
+        "Config file created at XDG-compliant path with all default values",
+        "Machine name auto-generated and written to config",
+        "Git repo initialized at configured repo_path",
+        "User prompted for remote_url if not provided via --remote flag",
+        "Idempotent: re-running init on existing setup does not corrupt state",
+        "Prints confirmation with machine name and repo path",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 13,
+      "status": "done",
+      "dependsOn": [
+        "US-002",
+        "US-010"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T16:26:23.078Z",
+      "updatedAt": "2026-03-29T16:33:26.316Z",
+      "completedAt": "2026-03-29T16:33:26.316Z"
+    },
+    {
+      "id": "US-014",
+      "title": "CLI import command",
+      "description": "Implement the chronicle import command (\u00a76.6, \u00a79.1). Performs a one-time bulk import: scan all configured agent session directories for .jsonl files, canonicalize each file, commit one commit per agent session directory for atomicity, and push all commits. Support --agent pi|claude|all filter and --dry-run mode.",
+      "acceptanceCriteria": [
+        "Scans configured agent session directories for .jsonl files",
+        "Each file canonicalized (L1+L2) and written to repo working tree",
+        "One commit per session directory (not per file, not one giant commit)",
+        "Import commit message format per \u00a76.4",
+        "--agent flag filters to pi, claude, or all (default: all)",
+        "--dry-run shows what would be imported without writing",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 14,
+      "status": "done",
+      "dependsOn": [
+        "US-005",
+        "US-003",
+        "US-010",
+        "US-012"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T16:33:26.401Z",
+      "updatedAt": "2026-03-29T18:46:38.066Z",
+      "completedAt": "2026-03-29T18:46:38.066Z"
+    },
+    {
+      "id": "US-015",
+      "title": "CLI push and pull commands",
+      "description": "Implement chronicle push and chronicle pull commands (\u00a79.1). Push: canonicalize local changes, commit, push to remote (outgoing only, no pull or de-canonicalization). Pull: fetch from remote, merge at entry level, de-canonicalize, write to local agent directories (incoming only, no push). Both support --dry-run.",
+      "acceptanceCriteria": [
+        "Push: scans local changes, canonicalizes, commits, pushes to remote",
+        "Push does NOT fetch or de-canonicalize",
+        "Pull: fetches from remote, merges conflicts at JSONL entry level, de-canonicalizes, writes locally",
+        "Pull does NOT push local changes",
+        "Both support --dry-run flag",
+        "File permissions preserved per \u00a711.5",
+        "Errors logged to ring buffer",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 15,
+      "status": "done",
+      "dependsOn": [
+        "US-005",
+        "US-006",
+        "US-007",
+        "US-011",
+        "US-012"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T18:46:38.140Z",
+      "updatedAt": "2026-03-29T19:12:00.727Z",
+      "completedAt": "2026-03-29T19:12:00.727Z"
+    },
+    {
+      "id": "US-016",
+      "title": "Partial history materialization",
+      "description": "Implement partial history materialization (\u00a77). When history_mode=partial, only the N most recent session files per directory are de-canonicalized and written locally during incoming sync. 'Most recent' determined by filename timestamp (Pi) or earliest entry timestamp (Claude). Files outside the window are not deleted if they already exist. Outgoing sync is unaffected by partial setting.",
+      "acceptanceCriteria": [
+        "When history_mode=full, all files materialized",
+        "When history_mode=partial, only partial_max_count most recent files per directory materialized",
+        "Pi: recency from filename timestamp",
+        "Claude: recency from earliest entry timestamp in file",
+        "Existing local files outside the window are NOT deleted",
+        "Outgoing sync always pushes all local files regardless of partial setting",
+        "Unit tests for recency ordering and partial filtering",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 16,
+      "status": "done",
+      "dependsOn": [
+        "US-005"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T19:12:00.894Z",
+      "updatedAt": "2026-03-29T19:22:13.927Z",
+      "completedAt": "2026-03-29T19:22:13.927Z"
+    },
+    {
+      "id": "US-017",
+      "title": "CLI sync command",
+      "description": "Implement the chronicle sync command (\u00a79.1, \u00a714) \u2014 the full bidirectional sync cycle that cron invokes. Orchestrates: load config \u2192 validate repo/remote \u2192 outgoing phase (scan, canonicalize, merge, commit) \u2192 git exchange (fetch, merge remote, push with retry) \u2192 incoming phase (de-canonicalize, partial filter, write local, preserve permissions) \u2192 update state cache and manifest.json. Support --dry-run and --quiet flags.",
+      "acceptanceCriteria": [
+        "Full sync cycle executes all phases from \u00a714 in order",
+        "Outgoing: changed files detected via scanner, canonicalized, merged if needed, committed",
+        "Git exchange: fetch, merge remote changes at entry level, push with retry",
+        "Incoming: de-canonicalize, apply partial history filter, write to local dirs",
+        "State cache (state.json) updated after successful sync",
+        "manifest.json updated with last_sync timestamp",
+        "--dry-run shows all phases without writing",
+        "--quiet suppresses non-error output",
+        "Idempotent: running sync with no changes creates no commits or file writes",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 17,
+      "status": "done",
+      "dependsOn": [
+        "US-009",
+        "US-014",
+        "US-015",
+        "US-016",
+        "US-008"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T19:22:14.010Z",
+      "updatedAt": "2026-03-29T19:38:36.987Z",
+      "completedAt": "2026-03-29T19:38:36.987Z"
+    },
+    {
+      "id": "US-018",
+      "title": "CLI status, errors, and config commands",
+      "description": "Implement three display/utility CLI commands. Status (\u00a79.1): show last sync time, pending local changes, remote changes (requires fetch), machine name, and configured agents. Errors (\u00a79.1): display the error ring buffer (last 30 by default, --limit N). Config (\u00a79.1): view full config, view single key, set key+value, special machine-name key.",
+      "acceptanceCriteria": [
+        "chronicle status shows last sync time, pending changes, machine name, agent status",
+        "chronicle errors displays ring buffer entries (default 30, --limit N)",
+        "chronicle config prints full config",
+        "chronicle config <key> prints single value",
+        "chronicle config <key> <value> sets value and writes config",
+        "chronicle config machine-name shows/sets machine identity",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 18,
+      "status": "done",
+      "dependsOn": [
+        "US-008",
+        "US-002"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T19:38:37.077Z",
+      "updatedAt": "2026-03-29T19:47:48.544Z",
+      "completedAt": "2026-03-29T19:47:48.544Z"
+    },
+    {
+      "id": "US-019",
+      "title": "Scheduler (cron management)",
+      "description": "Implement chronicle schedule install/uninstall/status commands (\u00a710). Install writes @reboot and interval crontab entries tagged with # chronicle-sync marker. Uninstall removes entries by marker. Status reports installed state, interval, and binary path. Map sync_interval config to cron expressions per \u00a710.2 (1m, 5m, 10m, 15m, 30m, 1h). Non-standard intervals rounded down with warning.",
+      "acceptanceCriteria": [
+        "schedule install writes @reboot + interval entries to crontab",
+        "Entries tagged with # chronicle-sync comment marker",
+        "Existing entries updated in place (not duplicated)",
+        "schedule uninstall removes all # chronicle-sync entries",
+        "Empty crontab after removal triggers crontab -r",
+        "schedule status reports: installed (yes/no), interval, binary path",
+        "Interval mapping: 1m, 5m, 10m, 15m, 30m, 1h to correct cron expressions",
+        "Non-standard intervals (e.g., 7m) rounded down with warning",
+        "Auto-detects chronicle binary path",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 19,
+      "status": "done",
+      "dependsOn": [
+        "US-002"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T19:47:48.608Z",
+      "updatedAt": "2026-03-29T19:56:22.760Z",
+      "completedAt": "2026-03-29T19:56:22.760Z"
+    },
+    {
+      "id": "US-020",
+      "title": "Property-based tests",
+      "description": "Implement property-based tests using proptest (\u00a715.3). Cover: merge commutativity (merge(A,B) == merge(B,A)), merge associativity (merge(merge(A,B),C) == merge(A,merge(B,C))), merge idempotency (merge(A,A) == A), canonicalization round-trip (decanon(canon(x)) == x for all levels and any home path), and merge superset (entries(merge(A,B)) \u2287 entries(A) \u222a entries(B)).",
+      "acceptanceCriteria": [
+        "proptest strategy generates valid JSONL entry sets",
+        "Merge commutativity property holds for generated inputs",
+        "Merge associativity property holds for generated inputs",
+        "Merge idempotency property holds for generated inputs",
+        "Canon round-trip property holds for all levels (L1, L2, L3) with random home paths",
+        "Merge superset property: merged result contains all entries from both inputs",
+        "Tests run via cargo test (proptest integrated)",
+        "cargo clippy -- -D warnings passes",
+        "cargo test passes"
+      ],
+      "priority": 20,
+      "status": "done",
+      "dependsOn": [
+        "US-005",
+        "US-006"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T19:56:22.833Z",
+      "updatedAt": "2026-03-29T20:06:15.364Z",
+      "completedAt": "2026-03-29T20:06:15.364Z"
+    },
+    {
+      "id": "US-021",
+      "title": "Integration tests",
+      "description": "Implement integration tests (\u00a715.2) in tests/ directory. Cover key scenarios: two-machine basic sync, concurrent append to different files, concurrent append to same file, canonicalization round-trip across machines, partial history materialization, network failure during push/fetch, disk full during writes, malformed JSONL handling, push conflict exhaustion, new machine bootstrap, symlink policy, L3 freeform canonicalization, custom tokens, import batching, and idempotent sync.",
+      "acceptanceCriteria": [
+        "Integration tests in tests/ directory",
+        "Two-machine sync: A creates session, syncs; B syncs, sees session",
+        "Concurrent append (different files): both machines get all entries",
+        "Concurrent append (same file): merged result contains union",
+        "Canon round-trip: file with home paths survives A\u2192canon\u2192store\u2192decanon\u2192B",
+        "Partial history: 200 sessions, partial_max_count=50, only 50 materialized",
+        "Malformed JSONL: corrupted line skipped, valid lines preserved",
+        "Import batching: 50 files across 5 dirs = 5 commits",
+        "Idempotent sync: no changes \u2192 no commits or file writes",
+        "All tests pass via cargo test",
+        "cargo clippy -- -D warnings passes"
+      ],
+      "priority": 21,
+      "status": "done",
+      "dependsOn": [
+        "US-017"
+      ],
+      "notes": "",
+      "startedAt": "2026-03-29T20:06:15.453Z",
+      "updatedAt": "2026-03-29T21:00:00.000Z",
+      "completedAt": "2026-03-29T21:00:00.000Z"
+    }
+  ]
+}

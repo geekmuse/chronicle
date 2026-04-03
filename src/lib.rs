@@ -37,3 +37,4 @@ pub mod materialize_cache;
 pub mod merge;
 pub mod scan;
 pub mod scheduler;
+pub mod sync_state;

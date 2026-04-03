@@ -55,7 +55,17 @@ enum Commands {
     },
 
     /// Show last sync time, pending changes, machine name, and agent status.
-    Status,
+    Status {
+        /// Show extra detail (file list, effective config values).
+        #[arg(short = 'v', long)]
+        verbose: bool,
+        /// Emit stable key=value pairs for scripting; no color or symbols.
+        #[arg(long)]
+        porcelain: bool,
+        /// Suppress ANSI color even when stdout is a TTY.
+        #[arg(long)]
+        no_color: bool,
+    },
 
     /// Display the error ring buffer.
     Errors {
@@ -98,7 +108,15 @@ fn main() -> Result<()> {
         Commands::Sync { dry_run, quiet } => cli::handle_sync(dry_run, quiet),
         Commands::Push { dry_run } => cli::handle_push(dry_run),
         Commands::Pull { dry_run } => cli::handle_pull(dry_run),
-        Commands::Status => cli::handle_status(),
+        Commands::Status {
+            verbose,
+            porcelain,
+            no_color,
+        } => cli::handle_status(cli::StatusArgs {
+            verbose,
+            porcelain,
+            no_color,
+        }),
         Commands::Errors { limit } => cli::handle_errors(limit),
         Commands::Config { key, value } => cli::handle_config(key, value),
         Commands::Schedule { command } => match command {

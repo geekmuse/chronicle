@@ -18,12 +18,9 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 1,
-      "status": "done",
+      "status": "open",
       "dependsOn": [],
-      "notes": "Keep SyncState minimal — only the three fields needed by the status display. Atomic write pattern mirrors the existing StateCache pattern in src/scan/mod.rs.",
-      "startedAt": "2026-04-03T02:55:50.430Z",
-      "updatedAt": "2026-04-03T03:00:44.892Z",
-      "completedAt": "2026-04-03T03:00:44.892Z"
+      "notes": "Keep SyncState minimal — only the three fields needed by the status display. Atomic write pattern mirrors the existing StateCache pattern in src/scan/mod.rs."
     },
     {
       "id": "US-002",
@@ -40,12 +37,9 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 2,
-      "status": "done",
+      "status": "open",
       "dependsOn": [],
-      "notes": "Used manual ANSI codes (no new dependency). TTY detection via std::io::IsTerminal. StatusFormatter<W: io::Write> for testable output. status_write() inner fn captures output in tests.",
-      "startedAt": "2026-04-03T03:00:44.894Z",
-      "updatedAt": "2026-04-03T03:15:48.646Z",
-      "completedAt": "2026-04-03T03:15:48.646Z"
+      "notes": "Use the termcolor crate (already a transitive dep via other crates) or manual ANSI codes — whichever avoids adding a new direct dependency. TTY detection: use std::io::IsTerminal (stable since Rust 1.70) or atty if already present."
     },
     {
       "id": "US-003",
@@ -63,15 +57,12 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 3,
-      "status": "done",
+      "status": "open",
       "dependsOn": [
         "US-001",
         "US-002"
       ],
-      "notes": "Re-use the PID liveness check already implemented for stale lock recovery (src/git/mod.rs). Do not trigger a new scan write — status must be read-only with respect to state files.",
-      "startedAt": "2026-04-03T03:15:48.648Z",
-      "updatedAt": "2026-04-03T03:23:02.315Z",
-      "completedAt": "2026-04-03T03:23:02.315Z"
+      "notes": "Re-use the PID liveness check already implemented for stale lock recovery (src/git/mod.rs). Do not trigger a new scan write — status must be read-only with respect to state files."
     },
     {
       "id": "US-004",
@@ -90,15 +81,12 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 4,
-      "status": "done",
+      "status": "open",
       "dependsOn": [
         "US-002",
         "US-003"
       ],
-      "notes": "For next-run time computation, inspect the existing scheduler/cron.rs for any cron-expression parsing already present before reaching for an external crate. If none exists, a simple 'minutes since last run mod interval' estimate is acceptable.",
-      "startedAt": "2026-04-03T03:23:02.318Z",
-      "updatedAt": "2026-04-03T03:35:00.000Z",
-      "completedAt": "2026-04-03T03:35:00.000Z"
+      "notes": "For next-run time computation, inspect the existing scheduler/cron.rs for any cron-expression parsing already present before reaching for an external crate. If none exists, a simple 'minutes since last run mod interval' estimate is acceptable."
     }
   ]
 }
