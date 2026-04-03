@@ -1,114 +1,98 @@
 {
   "project": "chronicle",
-  "branchName": "ralph/sync-perf-remaining",
-  "description": "Address remaining sync performance issues and gaps identified in docs/research/003-sync-performance-validation.md: implement materialization state cache to avoid reading all repo files when remote changes arrive, apply the conditional materialize fast-path to pull_impl, add advisory file locking to prevent concurrent sync cascades, and update documentation.",
+  "branchName": "ralph/status-improvements",
+  "description": "Replace the terse `chronicle status` output with a structured, human-friendly display covering five sections (Config/Machine, Last Sync, Pending Files, Lock State, Scheduler). Adds --verbose, --porcelain, and --no-color flags. Introduces sync_state.json to track last-sync timestamp and duration. Spec: docs/specs/002-status-improvements.md.",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Apply conditional materialize fast-path to pull_impl",
-      "description": "Gap 1 from the validation: pull_impl calls materialize_repo_to_local unconditionally even when integrate_remote_changes returns 0 (nothing new from remote). Apply the same remote_integrated > 0 guard that sync_impl already uses, so a pull with no remote changes skips the full 1.74 GB materialize pass.",
+      "title": "Add sync_state.json — schema, atomic write, and wire into sync/push/pull",
+      "description": "Introduce a new sync_state.json file that records the timestamp, duration, and operation type of the last successful sync, push, or pull. This is the data source for the 'Last Sync' section of chronicle status. The file must be written atomically (write to .tmp then rename) co-located with chronicle.lock in the repo work directory. Wire the write into sync_impl, push_impl, and pull_impl at the end of each successful operation.",
       "acceptanceCriteria": [
-        "pull_impl checks the return value of integrate_remote_changes and only calls materialize_repo_to_local when integrated > 0",
-        "When integrated == 0, pull_impl prints a message indicating nothing to materialize and returns materialized = 0",
-        "Existing pull tests continue to pass (pull_materialize_decanonicalize_writes_to_local_dir does not go through pull_impl's git path so is unaffected)",
-        "Add a unit test confirming pull skips materialize when no remote changes arrived",
+        "New SyncState struct (serde Serialize/Deserialize) with fields: last_sync_time (DateTime<Utc>), last_sync_duration_ms (u64), last_sync_op (enum or String: 'sync' | 'push' | 'pull')",
+        "write_sync_state(repo_path, op, duration) helper writes JSON atomically: serialize to temp file then fs::rename",
+        "sync_state_path(repo_path) returns <repo_work_dir>/sync_state.json (same directory as chronicle.lock)",
+        "sync_impl calls write_sync_state on successful completion, recording elapsed wall-clock duration",
+        "push_impl calls write_sync_state on successful completion",
+        "pull_impl calls write_sync_state on successful completion",
+        "Unit tests: write_sync_state round-trips correctly (write then read back), missing file returns None/default gracefully, path helper returns expected path",
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 1,
       "status": "done",
       "dependsOn": [],
-      "notes": "Quick win — mirrors the sync_impl fix from commit eb248c0. Located in src/cli/mod.rs pull_impl function.",
-      "startedAt": "2026-03-30T12:55:26.409Z",
-      "updatedAt": "2026-03-30T13:00:00.000Z",
-      "completedAt": "2026-03-30T13:00:00.000Z"
+      "notes": "Keep SyncState minimal — only the three fields needed by the status display. Atomic write pattern mirrors the existing StateCache pattern in src/scan/mod.rs.",
+      "startedAt": "2026-04-03T02:55:50.430Z",
+      "updatedAt": "2026-04-03T03:00:44.892Z",
+      "completedAt": "2026-04-03T03:00:44.892Z"
     },
     {
       "id": "US-002",
-      "title": "Add MaterializeCache schema and persistence",
-      "description": "Create a MaterializeCache struct that tracks the mtime/size of repo working-tree files at the time they were last materialized to local agent directories. This is the foundation for skipping unchanged files during materialization (the main remaining perf issue from the investigation). Use the same patterns as the existing StateCache: HashMap keyed by repo-relative path, JSON serialization, atomic write, path_for_repo co-location.",
+      "title": "StatusArgs CLI flags, output formatter, and Config/Machine section",
+      "description": "Add --verbose (-v), --porcelain, and --no-color flags to StatusArgs in src/cli/mod.rs. Extract status_impl as a standalone testable function. Implement the output formatting layer (✓/⚠/✗ symbols, ANSI color, TTY detection, NO_COLOR env var, porcelain key=value mode). Implement the Config/Machine section: load config, validate git.remote is set, check each enabled agent's sessions directory exists.",
       "acceptanceCriteria": [
-        "New MaterializeCache struct in src/scan/mod.rs (or a new src/materialize_cache.rs module) with: files: HashMap<String, MaterializeFileState> where MaterializeFileState has repo_mtime: DateTime<Utc> and repo_size: u64",
-        "MaterializeCache has load(path) and save(path) methods matching StateCache's API (missing file returns empty cache, atomic write via temp file + rename)",
-        "MaterializeCache::path_for_repo(repo_path) returns <repo_path>/../materialize-state.json (sibling of repo dir, same pattern as StateCache)",
-        "Add a config_hash: String field to MaterializeCache that stores a hash of the canonicalization config (level + home_token) — used for invalidation in US-004",
-        "Unit tests: load missing file returns empty, save/load round-trip, path_for_repo returns expected suffix",
+        "StatusArgs gains fields: verbose: bool, porcelain: bool, no_color: bool (all default false)",
+        "status_impl(args: &StatusArgs, config: &Config) is extracted and callable from tests without spawning a process",
+        "StatusFormatter (or equivalent) renders a line as '✓  Label: detail' (green), '⚠  Label: detail' (yellow), or '✗  Label: detail' (red) when color is enabled",
+        "Color is suppressed when: stdout is not a TTY, NO_COLOR env var is set, or --no-color is passed",
+        "--porcelain mode emits 'key=value' lines with no symbols or color",
+        "Config/Machine section emits: machine name, remote URL; ✗ if config file missing or unparseable, ✗ if git.remote is empty, ✗ if an enabled agent's sessions_dir does not exist",
+        "Unit tests cover: color suppression (no-color flag, NO_COLOR env), porcelain format, config-ok path, config-missing path, missing sessions_dir path",
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 2,
-      "status": "done",
-      "dependsOn": [],
-      "notes": "Schema/persistence layer only — wiring into materialize_agent_dir is US-003. Keep the struct simple; mirror StateCache patterns exactly.",
-      "startedAt": "2026-03-30T13:04:32.915Z",
-      "updatedAt": "2026-03-30T13:13:03.998Z",
-      "completedAt": "2026-03-30T13:13:03.998Z"
-    },
-    {
-      "id": "US-003",
-      "title": "Wire MaterializeCache into materialize_agent_dir to skip unchanged files",
-      "description": "Integrate the MaterializeCache from US-002 into the materialize_agent_dir function. Before reading each repo file, check if its mtime/size matches the cached state. If so, skip reading, de-canonicalizing, and comparing that file entirely. Update the cache after successful materialization. This eliminates the ~2.5 minute full-repo read when only a handful of files actually changed.",
-      "acceptanceCriteria": [
-        "materialize_repo_to_local accepts a &mut MaterializeCache parameter (or loads/saves it internally)",
-        "materialize_agent_dir checks each repo file's fs::metadata mtime/size against the cache before reading; unchanged files are skipped entirely (no fs::read_to_string)",
-        "After successfully writing (or confirming identical content in) a local file, the cache entry for that repo file is updated with current mtime/size",
-        "The MaterializeCache is persisted after a successful materialize pass in both sync_impl and pull_impl",
-        "If config_hash in the loaded cache differs from the current canonicalization config hash, the cache is cleared (full re-materialization) and config_hash is updated",
-        "Existing materialize tests pass — materialize_agent_dir_full_writes_all_files, materialize_agent_dir_partial_limits_per_subdir, pull_materialize_decanonicalize_writes_to_local_dir",
-        "Add a test: after materialization, a second call with unchanged repo files produces materialize count 0 (cache hit)",
-        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
-      ],
-      "priority": 3,
-      "status": "done",
-      "dependsOn": [
-        "US-002"
-      ],
-      "notes": "This is the main performance fix. The key insight is that repo mtime only changes when integrate_remote_changes writes new content — so on a typical cron run with remote changes, only the handful of changed files will be read.",
-      "startedAt": "2026-03-30T13:13:04.074Z",
-      "updatedAt": "2026-03-30T14:48:27.230Z",
-      "completedAt": "2026-03-30T14:48:27.230Z"
-    },
-    {
-      "id": "US-004",
-      "title": "Add advisory file lock to prevent concurrent sync processes",
-      "description": "Gap 2 from the validation: there is no concurrency protection — overlapping cron-invoked sync processes can queue on the git index lock, creating a cascade of back-to-back syncs. Add an advisory file lock (flock on Unix) at the start of sync_impl. If the lock cannot be acquired (another sync is running), log a message and exit cleanly without error.",
-      "acceptanceCriteria": [
-        "sync_impl acquires an advisory flock on a lock file (e.g., <repo_path>/../chronicle.lock) at the start of execution",
-        "If the lock is already held (EWOULDBLOCK / non-blocking flock fails), sync_impl prints a message like '[sync] Another sync is in progress — skipping this run.' and returns Ok(()) without error",
-        "The lock is released automatically when the File handle is dropped (end of sync_impl scope or early return)",
-        "push_impl also acquires the same lock with the same behavior",
-        "Use std::fs and libc/nix flock (or fs2 crate if already available) — prefer std over third-party crates per project config rules",
-        "Add a unit test that verifies the lock file path derivation",
-        "cargo test && cargo clippy -- -D warnings && cargo fmt --check && cargo deny check pass",
-        "If a new dependency is needed, verify it passes cargo deny check (license allowlist)"
-      ],
-      "priority": 4,
       "status": "in_progress",
       "dependsOn": [],
-      "notes": "Use non-blocking flock (LOCK_EX | LOCK_NB) so a second process fails fast rather than blocking. The lock file should be co-located with state.json (sibling of repo dir). On non-Unix platforms, skip locking gracefully.",
-      "startedAt": "2026-03-30T14:48:27.344Z",
-      "updatedAt": "2026-03-30T14:48:27.344Z",
+      "notes": "Use the termcolor crate (already a transitive dep via other crates) or manual ANSI codes — whichever avoids adding a new direct dependency. TTY detection: use std::io::IsTerminal (stable since Rust 1.70) or atty if already present.",
+      "startedAt": "2026-04-03T03:00:44.894Z",
+      "updatedAt": "2026-04-03T03:00:44.894Z",
       "completedAt": null
     },
     {
-      "id": "US-005",
-      "title": "Update documentation, CHANGELOG, and version for sync perf improvements",
-      "description": "Update all project documentation to reflect the sync performance improvements delivered in this branch. Bump the version in Cargo.toml and add a CHANGELOG entry. Update AGENTS.md current version. Cross-reference the research docs.",
+      "id": "US-003",
+      "title": "Last Sync, Pending Files, and Lock State sections",
+      "description": "Implement the three data-driven sections of chronicle status. Last Sync: read sync_state.json (from US-001), display timestamp and duration, or '⚠ never' if file absent. Pending Files: use the existing scan module (src/scan/mod.rs) to count files whose mtime/size differs from the last scan state; terse shows count only. Lock State: read chronicle.lock, determine whether it is free, held by a live PID, or stale.",
       "acceptanceCriteria": [
-        "CHANGELOG.md has a new version entry documenting: materialization state cache, pull_impl fast-path, advisory file lock",
-        "Cargo.toml version is bumped appropriately (PATCH bump for perf/fix changes)",
-        "AGENTS.md Current Version field matches the new Cargo.toml version",
-        "docs/research/002-sync-performance-investigation.md has date_modified updated and status set to reflect that the remaining issue is now fixed",
-        "docs/research/003-sync-performance-validation.md has date_modified updated if any findings changed",
+        "Last Sync section: ✓ with timestamp + duration when sync_state.json exists; ⚠ 'never' when absent",
+        "Last Sync porcelain keys: last_sync_time=<ISO8601 or empty>, last_sync_duration_ms=<n or empty>",
+        "Pending Files section: ✓ 'none' when 0 changed; ⚠ 'N files changed since last sync' when N > 0",
+        "Pending Files uses src/scan/mod.rs change detection against the persisted scan state (does not force a new scan write)",
+        "Pending Files porcelain key: pending_files=<n>",
+        "Lock State section: ✓ 'free' when no lock file; ⚠ 'held by PID <n> since <ts>' when PID is alive; ✗ 'stale lock (PID <n> dead)' when PID is dead or age exceeds lock_timeout_secs",
+        "Lock State porcelain key: lock_state=free|held|stale",
+        "Unit tests: last-sync-present, last-sync-absent, pending-files-zero, pending-files-nonzero, lock-free, lock-held-live, lock-stale",
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
-      "priority": 5,
+      "priority": 3,
       "status": "open",
       "dependsOn": [
         "US-001",
-        "US-002",
-        "US-003",
-        "US-004"
+        "US-002"
       ],
-      "notes": "Final housekeeping story. Do not bump version until all other stories are complete."
+      "notes": "Re-use the PID liveness check already implemented for stale lock recovery (src/git/mod.rs). Do not trigger a new scan write — status must be read-only with respect to state files."
+    },
+    {
+      "id": "US-004",
+      "title": "Scheduler section, --verbose expansion, porcelain completion, and integration test",
+      "description": "Add the final Scheduler section (crontab installed / not installed / malformed, next-run time estimate). Expand --verbose mode: Pending Files shows full file list instead of count, Config section shows effective config values. Finalize porcelain output with all remaining keys. Add an integration test covering the full happy path (all five sections, all ✓) and at least one error path (missing agent sessions dir).",
+      "acceptanceCriteria": [
+        "Scheduler section: ✓ 'installed — next run in N min' when cron entry found and parseable; ⚠ 'not installed — run chronicle schedule install' when absent; ✗ 'cron entry present but unrecognised format' when entry is malformed",
+        "Next-run time is computed from the cron expression relative to now; if unparseable, omit 'next run in' clause rather than erroring",
+        "Scheduler porcelain keys: scheduler_state=installed|not_installed|malformed, scheduler_next_run_secs=<n or empty>",
+        "--verbose Pending Files: prints each changed file path indented under the section header instead of just the count",
+        "--verbose Config: prints effective config values (remote URL, agents enabled, canonicalization level, lock_timeout_secs)",
+        "All porcelain keys from spec §3.3 are emitted: machine, remote, last_sync_time, last_sync_duration_ms, pending_files, lock_state, scheduler_state, scheduler_next_run_secs, config_ok, config_error",
+        "chronicle status always exits 0 regardless of section results",
+        "Integration test: happy-path run with valid config, existing sync_state.json, 0 pending files, free lock, installed cron — all five sections emit ✓",
+        "Integration test: error-path run with a missing agent sessions_dir — Config section emits ✗ and config_ok=false in porcelain",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 4,
+      "status": "open",
+      "dependsOn": [
+        "US-002",
+        "US-003"
+      ],
+      "notes": "For next-run time computation, inspect the existing scheduler/cron.rs for any cron-expression parsing already present before reaching for an external crate. If none exists, a simple 'minutes since last run mod interval' estimate is acceptable."
     }
   ]
 }

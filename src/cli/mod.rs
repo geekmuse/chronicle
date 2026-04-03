@@ -2054,131 +2054,220 @@ fn non_empty_machine_name(name: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// chronicle status
+// chronicle status — formatter
 // ---------------------------------------------------------------------------
 
-/// Handle `chronicle status`.
-pub fn handle_status() -> Result<()> {
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_RESET: &str = "\x1b[0m";
+
+/// Arguments for `chronicle status`.
+#[derive(Debug, Default, Clone)]
+pub struct StatusArgs {
+    /// Show extra detail (file list, effective config values).
+    pub verbose: bool,
+    /// Emit stable `key=value` pairs; no symbols or color.
+    pub porcelain: bool,
+    /// Suppress ANSI color even when stdout is a TTY.
+    pub no_color: bool,
+}
+
+/// Returns `true` when ANSI color should be used for status output.
+///
+/// Color is disabled when `--no-color` is passed, `NO_COLOR` is set in the
+/// environment (any value), or stdout is not a terminal.
+#[must_use]
+pub fn should_use_color(no_color_flag: bool) -> bool {
+    if no_color_flag {
+        return false;
+    }
+    if std::env::var("NO_COLOR").is_ok() {
+        return false;
+    }
+    io::stdout().is_terminal()
+}
+
+/// Output formatter for `chronicle status`.
+///
+/// Writes structured lines to any [`io::Write`] target so output can be
+/// captured in tests.
+pub struct StatusFormatter<W: io::Write> {
+    writer: W,
+    use_color: bool,
+    /// When `true`, emit stable `key=value` pairs instead of symbol lines.
+    pub porcelain: bool,
+}
+
+impl<W: io::Write> StatusFormatter<W> {
+    /// Create a new formatter writing to `writer`.
+    pub fn new(writer: W, use_color: bool, porcelain: bool) -> Self {
+        Self {
+            writer,
+            use_color,
+            porcelain,
+        }
+    }
+
+    fn symbol_line(
+        &mut self,
+        symbol: &str,
+        color: &str,
+        label: &str,
+        detail: &str,
+    ) -> io::Result<()> {
+        if self.porcelain {
+            return Ok(());
+        }
+        if self.use_color {
+            writeln!(
+                self.writer,
+                "{color}{symbol}{ANSI_RESET}  {label}: {detail}"
+            )
+        } else {
+            writeln!(self.writer, "{symbol}  {label}: {detail}")
+        }
+    }
+
+    /// Emit `✓  label: detail` (green when color is on).
+    pub fn ok(&mut self, label: &str, detail: &str) -> io::Result<()> {
+        self.symbol_line("✓", ANSI_GREEN, label, detail)
+    }
+
+    /// Emit `⚠  label: detail` (yellow when color is on).
+    pub fn warn(&mut self, label: &str, detail: &str) -> io::Result<()> {
+        self.symbol_line("⚠", ANSI_YELLOW, label, detail)
+    }
+
+    /// Emit `✗  label: detail` (red when color is on).
+    pub fn err(&mut self, label: &str, detail: &str) -> io::Result<()> {
+        self.symbol_line("✗", ANSI_RED, label, detail)
+    }
+
+    /// Emit `key=value\n` only in porcelain mode.
+    pub fn kv(&mut self, key: &str, value: &str) -> io::Result<()> {
+        if self.porcelain {
+            writeln!(self.writer, "{key}={value}")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// chronicle status — handle_status and status_impl
+// ---------------------------------------------------------------------------
+
+/// Handle `chronicle status [--verbose] [--porcelain] [--no-color]`.
+pub fn handle_status(args: StatusArgs) -> Result<()> {
     let config_path = config::default_config_path();
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    status_impl(&config_path, &home)
+    status_impl(&args, &config_path, &home)
 }
 
 /// Testable core of `handle_status` — accepts injected paths.
-fn status_impl(config_path: &Path, home: &Path) -> Result<()> {
-    let cfg = config::load(Some(config_path), &CliOverrides::default())
-        .context("failed to load configuration")?;
+///
+/// Loads the config internally and writes to stdout.  Always returns `Ok(())`
+/// — errors are displayed inline as `✗` lines.
+pub fn status_impl(args: &StatusArgs, config_path: &Path, home: &Path) -> Result<()> {
+    let use_color = should_use_color(args.no_color);
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    status_write(args, config_path, home, use_color, &mut out)
+}
 
-    // --- Machine name -------------------------------------------------------
-    let machine = if cfg.general.machine_name.is_empty() {
-        "(not configured — run chronicle init)".to_owned()
-    } else {
-        cfg.general.machine_name.clone()
-    };
-    println!("Machine       : {machine}");
-    println!("Config file   : {}", config_path.display());
+/// Inner status implementation that writes to any [`io::Write`] — used in
+/// tests to capture output.
+fn status_write<W: io::Write>(
+    args: &StatusArgs,
+    config_path: &Path,
+    home: &Path,
+    use_color: bool,
+    writer: &mut W,
+) -> Result<()> {
+    let mut fmt = StatusFormatter::new(writer, use_color, args.porcelain);
 
-    // --- Last sync time from manifest ---------------------------------------
-    let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
-    let last_sync_str = if repo_path.exists() {
-        match git::RepoManager::init_or_open(&repo_path, None, &cfg.storage.branch) {
-            Ok(manager) => match manager.read_manifest() {
-                Ok(manifest) => {
-                    if let Some(entry) = manifest.machines.get(&cfg.general.machine_name) {
-                        match entry.last_sync {
-                            Some(t) => t.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-                            None => "(never synced)".to_owned(),
-                        }
-                    } else {
-                        "(never synced)".to_owned()
-                    }
-                }
-                Err(e) => format!("(error reading manifest: {e})"),
-            },
-            Err(_) => "(no repository — run chronicle init)".to_owned(),
+    match config::load(Some(config_path), &CliOverrides::default()) {
+        Ok(cfg) => {
+            emit_config_machine_section(&mut fmt, &cfg, home)?;
         }
+        Err(e) => {
+            fmt.err("Config", &format!("failed to load: {e}"))?;
+            fmt.kv("config_ok", "false")?;
+            fmt.kv("config_error", &e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Emit the Config / Machine section of `chronicle status`.
+fn emit_config_machine_section<W: io::Write>(
+    fmt: &mut StatusFormatter<W>,
+    cfg: &config::Config,
+    home: &Path,
+) -> io::Result<()> {
+    let machine = &cfg.general.machine_name;
+    let remote = &cfg.storage.remote_url;
+    let mut config_errors: Vec<String> = Vec::new();
+
+    // Machine name + remote URL — combined on one line when both are set.
+    if !machine.is_empty() && !remote.is_empty() {
+        fmt.ok("Machine", &format!("{machine}  (remote: {remote})"))?;
     } else {
-        "(no repository — run chronicle init)".to_owned()
-    };
-    println!("Last sync     : {last_sync_str}");
+        if machine.is_empty() {
+            fmt.warn("Machine", "(not configured — run chronicle init)")?
+        } else {
+            fmt.ok("Machine", machine)?
+        };
+        if remote.is_empty() {
+            let msg = "remote not configured — run chronicle init --remote <url>";
+            config_errors.push(msg.to_owned());
+            fmt.err("Remote", "(not configured)")?;
+        } else {
+            fmt.ok("Remote", remote)?;
+        }
+    }
 
-    // --- Pending local changes via scanner ----------------------------------
-    let follow_symlinks = cfg.general.follow_symlinks;
-    let state_cache =
-        scan::StateCache::load(&scan::StateCache::path_for_repo(&repo_path)).unwrap_or_default();
-
-    let mut pending_new = 0usize;
-    let mut pending_mod = 0usize;
-
+    // Check each enabled agent's sessions directory.
     if cfg.agents.pi.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
-        if source_dir.exists() {
-            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                Ok(entries) => {
-                    for e in &entries {
-                        match e.kind {
-                            scan::ChangeKind::New => pending_new += 1,
-                            scan::ChangeKind::Modified => pending_mod += 1,
-                            scan::ChangeKind::Unchanged => {}
-                        }
-                    }
-                }
-                Err(e) => eprintln!("  Warning: failed to scan Pi sessions: {e}"),
-            }
+        let dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
+        if dir.exists() {
+            fmt.ok("Pi sessions", &dir.to_string_lossy())?;
+        } else {
+            let msg = format!(
+                "Pi agent enabled but sessions directory not found: {}",
+                dir.display()
+            );
+            config_errors.push(msg.clone());
+            fmt.err("Config", &msg)?;
         }
     }
 
     if cfg.agents.claude.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
-        if source_dir.exists() {
-            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                Ok(entries) => {
-                    for e in &entries {
-                        match e.kind {
-                            scan::ChangeKind::New => pending_new += 1,
-                            scan::ChangeKind::Modified => pending_mod += 1,
-                            scan::ChangeKind::Unchanged => {}
-                        }
-                    }
-                }
-                Err(e) => eprintln!("  Warning: failed to scan Claude sessions: {e}"),
-            }
+        let dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
+        if dir.exists() {
+            fmt.ok("Claude sessions", &dir.to_string_lossy())?;
+        } else {
+            let msg = format!(
+                "Claude agent enabled but sessions directory not found: {}",
+                dir.display()
+            );
+            config_errors.push(msg.clone());
+            fmt.err("Config", &msg)?;
         }
     }
 
-    if pending_new + pending_mod == 0 {
-        println!("Pending       : (none — up to date)");
+    // Porcelain keys for the Config / Machine section.
+    fmt.kv("machine", machine)?;
+    fmt.kv("remote", remote)?;
+    if config_errors.is_empty() {
+        fmt.kv("config_ok", "true")?;
+        fmt.kv("config_error", "")?;
     } else {
-        println!("Pending       : {pending_new} new, {pending_mod} modified");
+        fmt.kv("config_ok", "false")?;
+        fmt.kv("config_error", &config_errors.join("; "))?;
     }
-
-    // --- Remote URL ---------------------------------------------------------
-    if cfg.storage.remote_url.is_empty() {
-        println!("Remote URL    : (not configured)");
-    } else {
-        println!("Remote URL    : {}", cfg.storage.remote_url);
-    }
-
-    // --- Agent status -------------------------------------------------------
-    println!("\nAgents:");
-    println!(
-        "  Pi    : {} | {}",
-        if cfg.agents.pi.enabled {
-            "enabled "
-        } else {
-            "disabled"
-        },
-        cfg.agents.pi.session_dir
-    );
-    println!(
-        "  Claude: {} | {}",
-        if cfg.agents.claude.enabled {
-            "enabled "
-        } else {
-            "disabled"
-        },
-        cfg.agents.claude.session_dir
-    );
 
     Ok(())
 }
@@ -4163,7 +4252,12 @@ mod tests {
         write_status_config(&config_path, &repo_path, &pi_sessions, "test-machine");
 
         // Should succeed without panicking.
-        status_impl(&config_path, &home).unwrap();
+        let args = StatusArgs {
+            verbose: false,
+            porcelain: false,
+            no_color: true,
+        };
+        status_impl(&args, &config_path, &home).unwrap();
     }
 
     #[test]
@@ -4192,7 +4286,13 @@ mod tests {
         write_status_config(&config_path, &repo_path, &pi_sessions, "test-machine");
 
         // Should succeed; pending count is at least 1 (state cache is empty).
-        status_impl(&config_path, &home).unwrap();
+        // (Scan-based pending count moves to US-003; this test verifies no panic.)
+        let args = StatusArgs {
+            verbose: false,
+            porcelain: false,
+            no_color: true,
+        };
+        status_impl(&args, &config_path, &home).unwrap();
     }
 
     #[test]
@@ -4222,8 +4322,13 @@ mod tests {
 
         write_status_config(&config_path, &repo_path, &pi_sessions, "sync-machine");
 
-        // Should succeed; manifest entry should produce a formatted timestamp.
-        status_impl(&config_path, &home).unwrap();
+        // Should succeed; manifest-based timestamp moves to US-003.
+        let args = StatusArgs {
+            verbose: false,
+            porcelain: false,
+            no_color: true,
+        };
+        status_impl(&args, &config_path, &home).unwrap();
     }
 
     #[test]
@@ -4251,9 +4356,237 @@ mod tests {
             "chronicle",
         );
 
-        // status_impl must succeed; if it still hardcodes "main" it would
-        // either fail or produce wrong output on a repo with branch "chronicle".
-        status_impl(&config_path, &home).unwrap();
+        // status_impl must succeed; branch handling moves to US-003 (last-sync
+        // section opens the git repo).  For US-002 (Config/Machine only), this
+        // verifies no panic on a non-"main" branch config.
+        let args = StatusArgs {
+            verbose: false,
+            porcelain: false,
+            no_color: true,
+        };
+        status_impl(&args, &config_path, &home).unwrap();
+    }
+
+    // --- US-002: status formatter and config/machine section ----------------
+
+    #[test]
+    fn status_formatter_ok_writes_check_mark() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, false);
+        fmt.ok("Label", "detail").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("✓"), "ok line must contain ✓");
+        assert!(out.contains("Label"), "ok line must contain label");
+        assert!(out.contains("detail"), "ok line must contain detail");
+    }
+
+    #[test]
+    fn status_formatter_warn_writes_warning_symbol() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, false);
+        fmt.warn("Label", "detail").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("⚠"), "warn line must contain ⚠");
+    }
+
+    #[test]
+    fn status_formatter_err_writes_cross() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, false);
+        fmt.err("Label", "detail").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("✗"), "err line must contain ✗");
+    }
+
+    #[test]
+    fn status_formatter_color_includes_ansi_codes() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, true, false);
+        fmt.ok("L", "d").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("\x1b["),
+            "color-enabled output must contain ANSI escape codes"
+        );
+    }
+
+    #[test]
+    fn status_formatter_no_color_excludes_ansi_codes() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, false);
+        fmt.ok("L", "d").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !out.contains("\x1b["),
+            "color-disabled output must not contain ANSI escape codes"
+        );
+    }
+
+    #[test]
+    fn status_formatter_porcelain_emits_kv() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, true);
+        fmt.kv("machine", "eager-falcon").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            out, "machine=eager-falcon\n",
+            "porcelain kv must be key=value\\n"
+        );
+    }
+
+    #[test]
+    fn status_formatter_porcelain_suppresses_symbol_lines() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, true);
+        fmt.ok("Label", "detail").unwrap();
+        fmt.warn("Label2", "detail2").unwrap();
+        fmt.err("Label3", "detail3").unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.is_empty(), "porcelain mode must suppress symbol lines");
+    }
+
+    #[test]
+    fn should_use_color_no_color_flag_suppresses() {
+        assert!(
+            !should_use_color(true),
+            "--no-color flag must suppress color"
+        );
+    }
+
+    #[test]
+    fn should_use_color_no_color_env_suppresses() {
+        std::env::set_var("NO_COLOR", "1");
+        let result = should_use_color(false);
+        std::env::remove_var("NO_COLOR");
+        assert!(!result, "NO_COLOR env var must suppress color");
+    }
+
+    #[test]
+    fn status_config_ok_path_shows_check_mark() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        // Create the sessions directory so it is found.
+        std::fs::create_dir_all(&pi_sessions).unwrap();
+
+        let toml = format!(
+            "[general]\nmachine_name = \"test-machine\"\n\n\
+             [storage]\nrepo_path = \"{}\"\nremote_url = \"https://example.com/repo.git\"\n\n\
+             [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
+             [agents.claude]\nenabled = false\n",
+            repo_path.display(),
+            pi_sessions.display(),
+        );
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, &toml).unwrap();
+
+        let args = StatusArgs {
+            verbose: false,
+            porcelain: false,
+            no_color: true,
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("✓"), "config-ok path must emit ✓ symbol");
+        assert!(!out.contains("✗"), "config-ok path must not emit ✗ symbol");
+    }
+
+    #[test]
+    fn status_config_missing_path_shows_error() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("nonexistent.toml");
+        let home = dir.path().to_path_buf();
+
+        let args = StatusArgs {
+            verbose: false,
+            porcelain: false,
+            no_color: true,
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("✗"), "config-missing must emit ✗ error line");
+    }
+
+    #[test]
+    fn status_missing_sessions_dir_shows_error() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions_nonexistent");
+        let home = dir.path().to_path_buf();
+
+        // Do NOT create pi_sessions — it must be missing.
+        let toml = format!(
+            "[general]\nmachine_name = \"test-machine\"\n\n\
+             [storage]\nrepo_path = \"{}\"\nremote_url = \"https://example.com/repo.git\"\n\n\
+             [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
+             [agents.claude]\nenabled = false\n",
+            repo_path.display(),
+            pi_sessions.display(),
+        );
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, &toml).unwrap();
+
+        let args = StatusArgs {
+            verbose: false,
+            porcelain: false,
+            no_color: true,
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("✗"),
+            "missing sessions dir must emit ✗ error line"
+        );
+        assert!(
+            out.contains("sessions"),
+            "error message must mention sessions directory"
+        );
+    }
+
+    #[test]
+    fn status_porcelain_config_ok_emits_kv_keys() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        std::fs::create_dir_all(&pi_sessions).unwrap();
+        let toml = format!(
+            "[general]\nmachine_name = \"eager-falcon\"\n\n\
+             [storage]\nrepo_path = \"{}\"\nremote_url = \"https://example.com/repo.git\"\n\n\
+             [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
+             [agents.claude]\nenabled = false\n",
+            repo_path.display(),
+            pi_sessions.display(),
+        );
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, &toml).unwrap();
+
+        let args = StatusArgs {
+            verbose: false,
+            porcelain: true,
+            no_color: true,
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("machine=eager-falcon"),
+            "porcelain must emit machine="
+        );
+        assert!(
+            out.contains("config_ok=true"),
+            "porcelain must emit config_ok=true when all is healthy"
+        );
+        assert!(!out.contains("✓"), "porcelain mode must not emit symbols");
     }
 
     // --- errors -------------------------------------------------------------

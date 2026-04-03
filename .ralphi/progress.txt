@@ -1,92 +1,30 @@
 ## Codebase Patterns
-- `sync_impl` and `pull_impl` both have a fast-path guard: skip
-  `materialize_repo_to_local` when `integrate_remote_changes` returns 0.
-  Always mirror this guard in both functions when touching materialize logic.
-- Tests that call `pull_impl` (non-dry-run, with remote) need a bare git repo
-  created with `git2::RepositoryInitOptions::bare(true)` and `write_push_config`.
-  The repo can then be pre-populated by calling
-  `git::RepoManager::init_or_open` + manual fs writes before invoking pull_impl.
-- `integrate_remote_changes` returns 0 immediately when the remote tracking
-  ref (`refs/remotes/origin/<branch>`) does not exist (empty remote).
-- Cache structs (`StateCache`, `MaterializeCache`) live in separate modules and
-  share the same API: `load(path)`, `save(path)`, `path_for_repo(repo_path)`.
-  `path_for_repo` always returns a sibling of the repo directory (one level up).
-  Atomic write uses `.mcache.<pid>.<nanos>.tmp` then `fs::rename` — copy this
-  pattern exactly for any new cache types.
-- The pre-commit hook (`ralphi check`) takes ~60s; use a 180s bash timeout when
-  committing from within an agent session.
+- **Atomic file write pattern**: serialize to `.<name>.<pid>.<nanos>.tmp` sibling, then `fs::rename` to target. Used by `StateCache`, `MaterializeCache`, and now `SyncState`. Always call `fs::create_dir_all(parent)` first.
+- **Co-location convention**: state files sit as siblings of the repo dir (`<repo_path>/../<file>.json`). The `path_for_repo(repo_path)` method returns `repo_path.parent().unwrap_or(repo_path).join("<file>.json")`.
+- **Non-fatal side-effect writes**: wrap state file writes in `if let Err(e) = ... { tracing::warn!(...) }` — never fail the main operation on bookkeeping errors.
+- **Operation timing**: capture `std::time::Instant::now()` AFTER lock acquisition (before real work), use `.elapsed()` at end for accurate duration excluding jitter.
+- **Module registration**: new modules must be added to `src/lib.rs` as `pub mod <name>;` so integration tests can import them.
 ---
 
 ## PRD Run Context
-PRD Branch: ralph/sync-perf-remaining
-Started: 2026-03-30T12:55:26.346Z
+PRD Branch: ralph/status-improvements
+Started: 2026-04-03T02:55:50.428Z
 ---
 
-## 2026-03-30 - US-001
+## 2026-04-03 - US-001
 Session: N/A
 Review Outcome: PASS
 Trajectory: ON_TRACK
 Trajectory Notes: N/A
 Corrective Plan: N/A
-- Applied conditional materialize fast-path to pull_impl (mirrors sync_impl guard)
-- Changed unconditional `materialize_repo_to_local` call to `if integrated > 0` guard
-- Added "[pull] Nothing to materialize — no remote changes arrived." message for 0 case
-- Added unit test `pull_skips_materialize_when_no_remote_changes`:
-  - Sets up a bare empty remote (no commits → integrate_remote_changes returns 0)
-  - Plants a canonical session file in the local repo working tree
-  - Calls pull_impl; asserts local pi_sessions dir remains empty
-- Files changed: src/cli/mod.rs
-- Commit: 5181344
+- Created `src/sync_state.rs` with `SyncOp` enum (Sync/Push/Pull, serde lowercase), `SyncState` struct (3 fields), `sync_state_path()`, `write_sync_state()` (atomic), `read_sync_state()` (None on missing)
+- Registered module in `src/lib.rs` as `pub mod sync_state`
+- Added `use crate::sync_state::{self, SyncOp}` import to `src/cli/mod.rs`
+- Wired `write_sync_state` into `sync_impl`, `push_impl`, `pull_impl`: `Instant::now()` captured after lock acquisition; write call after state-cache save; failures logged as warnings (non-fatal)
+- 9 unit tests: path helper, round-trips for all 3 ops, missing-file None, create-parent-dirs, lowercase serde, last_sync_time recency
+- All 367 tests pass; clippy, fmt, deny clean
 - **Learnings for future iterations:**
-  - `integrate_remote_changes` returns 0 immediately when `refs/remotes/origin/<branch>` doesn't exist
-  - pull tests with a real remote need `write_push_config` + a bare repo init
-  - `git::RepoManager::init_or_open` is accessible from test scope via `use super::*`
-  - The pre-commit hook runs `ralphi check` which runs all quality checks in sequence
----
-
-## 2026-03-30 - US-002
-Session: N/A
-Review Outcome: PASS
-Trajectory: ON_TRACK
-Trajectory Notes: N/A
-Corrective Plan: N/A
-- Created src/materialize_cache.rs with MaterializeFileState and MaterializeCache structs
-- MaterializeFileState: { repo_mtime: DateTime<Utc>, repo_size: u64 }
-- MaterializeCache: { files: HashMap<String, MaterializeFileState>, config_hash: String }
-- Implemented load/save/path_for_repo mirroring StateCache patterns exactly
-- path_for_repo returns <repo>/../materialize-state.json (sibling of repo dir)
-- Atomic save via .mcache.<pid>.<nanos>.tmp + fs::rename
-- config_hash field with #[serde(default)] for cache invalidation (US-003)
-- Registered pub mod materialize_cache in src/lib.rs
-- 6 unit tests: load missing, round-trip, parent creation, path_for_repo suffix, root fallback, default config_hash
-- Files changed: src/materialize_cache.rs (new), src/lib.rs
-- Commit: 697682d
-- **Learnings for future iterations:**
-  - `#[serde(default)]` is needed on `config_hash` so existing JSON without that field
-    deserializes cleanly (backward-compatible schema evolution)
-  - Place cache in its own module (not appended to scan/mod.rs) to keep files focused
-  - US-003 will wire this into materialize_agent_dir; the cache key should be the
-    repo-relative path string (same as StateCache keys)
----
-
-## 2026-03-30 - US-003
-Session: N/A
-Review Outcome: PASS
-Trajectory: ON_TRACK
-Trajectory Notes: N/A
-Corrective Plan: N/A
-- Wired MaterializeCache into materialize_agent_dir to skip unchanged repo files
-- materialize_repo_to_local loads cache at start, saves after successful pass (both sync_impl and pull_impl benefit automatically)
-- config_hash = "level:home_token"; cache cleared when config changes
-- materialize_agent_dir gains `cache: &mut MaterializeCache` + `repo_rel_base: &str` (7 params, within clippy limit)
-- Per-file loop: fs::metadata mtime/size checked before read_to_string; cache hit → skip entirely
-- Cache entry updated after write AND after confirming identical local content (idempotent-skip path)
-- Updated 3 existing test call sites; added new test `materialize_cache_skips_unchanged_files_on_second_call`
-- Files changed: src/cli/mod.rs
-- Commit: ff697c5
-- **Learnings for future iterations:**
-  - 7 parameters is the clippy too_many_arguments limit (8+ triggers it); no attribute needed for 7
-  - `DateTime::<Utc>::from(SystemTime)` is the idiomatic mtime conversion in chrono
-  - Borrow checker is fine with `cache.files.get(&key)` in an `if let` followed by `cache.files.insert(key, ...)` — the immutable borrow ends before the mutable one starts
-  - `materialize_repo_to_local` is the single load/save site; sync_impl and pull_impl automatically get cache persistence because they both call this function
+  - `cargo fmt` reformats long `if let Err(e) = <multiline>` chains to single-line; avoid manual line-breaking
+  - The `path_for_repo` pattern (`parent().unwrap_or(self)`) is used consistently for all co-located state files
+  - `push_impl` has multiple early-return paths (dry_run, nothing changed, nothing staged) — `push_op_start` is only consumed on the success path, but Rust doesn't warn since the variable IS referenced
 ---
