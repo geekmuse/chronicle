@@ -2532,9 +2532,11 @@ fn emit_pending_files_section<W: io::Write>(
     if pending_count == 0 {
         fmt.ok("Pending Files", "none")?;
     } else {
-        fmt.warn(
+        // Files awaiting the next sync cycle is the normal working state —
+        // not a warning.  Use ok so the output does not look alarming.
+        fmt.ok(
             "Pending Files",
-            &format!("{pending_count} file(s) changed since last sync"),
+            &format!("{pending_count} file(s) queued for next sync"),
         )?;
         if verbose {
             for (source_dir, abs_path) in &pending_paths {
@@ -2600,9 +2602,24 @@ fn emit_lock_state_section<W: io::Write>(
 
     let pid_str = pid.map_or_else(|| "?".to_owned(), |p| p.to_string());
 
-    if pid_dead || age_exceeded {
-        fmt.err("Lock State", &format!("stale lock (PID {pid_str} dead)"))?;
+    if pid_dead {
+        // The process that held the lock has exited — sync completed (or
+        // exited cleanly).  Orphaned file is harmless; auto-cleared on the
+        // next sync run.  Warn rather than Error so a successful sync does
+        // not appear broken in the status output.
+        fmt.warn(
+            "Lock State",
+            &format!("stale — PID {pid_str} has exited (auto-cleared on next sync)"),
+        )?;
         fmt.kv("lock_state", "stale")?;
+    } else if age_exceeded {
+        // PID is still alive but has held the lock longer than the
+        // configured timeout — a sync may be hung.
+        fmt.err(
+            "Lock State",
+            &format!("held by PID {pid_str} for over {lock_timeout_u64}s — possible hung sync"),
+        )?;
+        fmt.kv("lock_state", "hung")?;
     } else {
         let ts_str = stamp.map_or_else(
             || "unknown time".to_owned(),
@@ -5341,7 +5358,7 @@ mod tests {
     }
 
     #[test]
-    fn status_pending_files_nonzero_emits_warn() {
+    fn status_pending_files_nonzero_emits_ok() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("config.toml");
         let repo_path = dir.path().join("repo");
@@ -5364,8 +5381,8 @@ mod tests {
         status_write(&args, &config_path, &home, false, &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
-            out.contains("changed since last sync"),
-            "pending-files-nonzero must mention 'changed since last sync'; got: {out}"
+            out.contains("queued for next sync"),
+            "pending-files-nonzero must mention 'queued for next sync'; got: {out}"
         );
     }
 
@@ -5458,7 +5475,7 @@ mod tests {
     }
 
     #[test]
-    fn status_lock_stale_emits_err() {
+    fn status_lock_dead_pid_emits_warn() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("config.toml");
         let repo_path = dir.path().join("repo");
@@ -5468,12 +5485,10 @@ mod tests {
         std::fs::create_dir_all(&pi_sessions).unwrap();
         write_status_config(&config_path, &repo_path, &pi_sessions, "test-machine");
 
-        // Write a lock file with the current PID but timestamp 0 (Unix epoch).
-        // Age = now - 0 >> 300 s (default lock_timeout_secs), so age_exceeded fires.
+        // PID 9999999 is almost certainly dead — orphaned lock, benign.
         let lock_path = lock_file_path(&repo_path);
         std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-        let own_pid = std::process::id();
-        std::fs::write(&lock_path, format!("{own_pid} 0")).unwrap();
+        std::fs::write(&lock_path, b"9999999 0").unwrap();
 
         let args = StatusArgs {
             no_color: true,
@@ -5482,9 +5497,59 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         status_write(&args, &config_path, &home, false, &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
+        // Dead PID → Warn: lock line must contain ‘stale’ and the warn symbol, not the error symbol.
+        let lock_line = out.lines().find(|l| l.contains("Lock State")).unwrap_or("");
         assert!(
-            out.contains("stale lock"),
-            "lock-stale must show 'stale lock'; got: {out}"
+            lock_line.contains("stale"),
+            "dead-PID lock must show 'stale' on Lock State line; got: {lock_line}"
+        );
+        assert!(
+            lock_line.contains("⚠"),
+            "dead-PID lock must show warn symbol on Lock State line; got: {lock_line}"
+        );
+    }
+
+    #[test]
+    fn status_lock_live_pid_age_exceeded_emits_err_and_hung_porcelain() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        std::fs::create_dir_all(&pi_sessions).unwrap();
+        write_status_config(&config_path, &repo_path, &pi_sessions, "test-machine");
+
+        // Current PID (alive) + epoch timestamp → age always exceeds timeout.
+        let lock_path = lock_file_path(&repo_path);
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let own_pid = std::process::id();
+        std::fs::write(&lock_path, format!("{own_pid} 0")).unwrap();
+
+        // Human-readable: shows "hung sync".
+        let args = StatusArgs {
+            no_color: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("hung sync"),
+            "live-PID-age-exceeded must mention 'hung sync'; got: {out}"
+        );
+
+        // Porcelain: lock_state=hung.
+        let args_p = StatusArgs {
+            porcelain: true,
+            ..Default::default()
+        };
+        let mut buf_p = Vec::<u8>::new();
+        status_write(&args_p, &config_path, &home, false, &mut buf_p).unwrap();
+        let out_p = String::from_utf8(buf_p).unwrap();
+        assert!(
+            out_p.contains("lock_state=hung"),
+            "porcelain must emit lock_state=hung; got: {out_p}"
         );
     }
 
