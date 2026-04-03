@@ -371,8 +371,11 @@ state cache (`materialize-state.json`) tracks what has already been processed.
 
 Chronicle acquires an advisory file lock (`chronicle.lock`) before each sync so
 that overlapping cron invocations exit cleanly rather than crashing with git index
-errors. If you see stale lock errors, check that no Chronicle process is hung, then
-delete `<repo-parent>/chronicle.lock` manually.
+errors. The lock file is automatically deleted when the sync exits cleanly. If
+`chronicle status` or `chronicle doctor` shows a stale lock warning, the holding
+process has already exited and the file will be cleared on the next sync run. If
+the warning persists and no sync is running, delete `<repo-parent>/chronicle.lock`
+manually.
 
 **Canonicalization level**
 

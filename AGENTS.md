@@ -353,3 +353,9 @@ When investigating a tool, approach, or pattern:
       (JSONL file count), check_scheduler (cron + lock liveness); DoctorArgs CLI wiring;
       human-readable grouped output with ANSI symbols; --porcelain key=value mode;
       exit codes 0/1/2 (pass/warn/error); 23 unit tests + 3 integration tests
+- [x] UX polish and correctness fixes (v0.8.1–v0.8.4): doctor stale-lock/dead-PID
+      downgraded Err→Warn; doctor SSH agent probe (SSH_AUTH_SOCK) added alongside
+      key-file check; status pending-files changed Warn→Ok with neutral copy;
+      status/doctor stale-lock splits dead-PID (Warn, lock_state=stale) from
+      live-PID-past-timeout (Err, lock_state=hung); SyncLockGuard RAII type
+      deletes chronicle.lock on clean sync exit so status/doctor show free not stale
