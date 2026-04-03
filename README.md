@@ -81,6 +81,7 @@ invariant of JSONL session data.
 - **Partial materialization** — Pull only the N most recent sessions per project, while the Git repo retains complete history
 - **Agent-agnostic** — Supports Pi and Claude Code with extensible agent architecture
 - **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
+- **Rich `status` command** — Human-friendly (✓/⚠/✗) and machine-readable (`--porcelain`) output covering last-sync time/duration/operation, pending-file count, lock state, scheduler health, and per-agent sessions-dir existence; `--verbose` expands file lists and effective config values
 
 ---
 
@@ -262,8 +263,14 @@ chronicle push
 # Pull and materialise the latest remote sessions locally
 chronicle pull
 
-# Check sync status (last sync time, pending files, remote branch)
+# Check sync status (human-friendly output)
 chronicle status
+
+# Verbose: show pending file paths and effective config values
+chronicle status --verbose
+
+# Machine-readable key=value output for scripts
+chronicle status --porcelain
 
 # View recent sync errors
 chronicle errors

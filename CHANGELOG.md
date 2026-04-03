@@ -13,6 +13,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.6.0] - 2026-04-03
+
+### Added
+- **`sync_state.json` data layer** — `chronicle sync`, `push`, and `pull` now
+  atomically write a `sync_state.json` file (co-located with `chronicle.lock`)
+  recording the timestamp, wall-clock duration, and operation type
+  (`sync`/`push`/`pull`) of the last successful operation.  Read by
+  `chronicle status` to display last-sync information.  Non-fatal on write
+  failure (logged at `WARN`, never blocks the sync).
+- **`chronicle status` improvements** — Complete redesign of the status output:
+  - **Config / Machine section** — machine name, remote URL, per-agent
+    sessions-directory existence (with `⚠` when missing).
+  - **Last Sync section** — timestamp (RFC 3339), elapsed duration, and
+    operation type from `sync_state.json`; shows `never synced` when the
+    file does not exist.
+  - **Pending Files section** — count of locally modified session files not
+    yet pushed; `--verbose` expands to the full file list.
+  - **Lock State section** — whether `chronicle.lock` is held, by whom (PID),
+    and for how long.
+  - **Scheduler section** — cron schedule installed/not-installed/malformed;
+    when installed, shows the cron expression and next-run time.
+  - **`--verbose` / `-v`** — expands Pending Files to paths and Config to
+    effective config values.
+  - **`--porcelain`** — stable `key=value` output for scripting; all defined
+    keys are always emitted (empty value when not applicable).
+  - **`--no-color`** — suppress ANSI colour; also honoured via `NO_COLOR` env
+    var and non-TTY stdout detection.
+  - All output written through a generic `StatusFormatter<W: io::Write>` so
+    the full command is unit-testable without spawning a subprocess.
+
 ## [0.5.0] - 2026-03-30
 
 ### Added

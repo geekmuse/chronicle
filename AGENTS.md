@@ -106,6 +106,7 @@ chronicle/
 │   │   ├── mod.rs
 │   │   └── ring_buffer.rs           # 30-entry error ring buffer (JSONL file)
 │   ├── materialize_cache.rs         # Materialization state cache (mtime/size, config hash)
+│   ├── sync_state.rs                # sync_state.json schema, atomic write/read (last sync time/op/duration)
 │   └── scan/                        # File change detection
 │       └── mod.rs                   # mtime/size-based change detection + state cache
 └── tests/
@@ -328,3 +329,6 @@ When investigating a tool, approach, or pattern:
 - [x] CI/CD pipeline
 - [x] Sync performance fixes (v0.4.1–v0.4.2): state cache population, conditional materialize,
       `MaterializeCache` for O(1) re-materialize, advisory flock for concurrency safety
+- [x] Rich `chronicle status` (v0.6.0): `sync_state.json` data layer, `StatusFormatter<W>` with
+      ANSI/no-color/TTY detection, Config/Machine, Last Sync, Pending Files, Lock State, Scheduler
+      sections; `--verbose`, `--porcelain`, `--no-color` flags
