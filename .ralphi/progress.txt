@@ -1,4 +1,8 @@
 ## Codebase Patterns
+- **Status formatter pattern**: `StatusFormatter<W: io::Write>` takes a generic writer for testability. Tests pass `&mut Vec<u8>` to capture output. `ok/warn/err` are no-ops in porcelain mode; `kv` is a no-op outside porcelain mode. Color codes (ANSI_GREEN/YELLOW/RED/RESET constants) applied to the symbol only.
+- **should_use_color helper**: `pub fn should_use_color(no_color_flag: bool) -> bool` — checks flag, then `NO_COLOR` env var, then `io::stdout().is_terminal()`. Marked `#[must_use]`.
+- **Private inner write function**: `status_write<W: io::Write>(args, config_path, home, use_color, writer)` is private but accessible from `mod tests` (child modules can access parent private items in Rust). Allows output capture without spawning a process.
+- **Config re-export**: `config::Config` is available directly (via `pub use schema::Config` in `config/mod.rs`). No need to spell out `config::schema::Config` in function signatures.
 - **Atomic file write pattern**: serialize to `.<name>.<pid>.<nanos>.tmp` sibling, then `fs::rename` to target. Used by `StateCache`, `MaterializeCache`, and now `SyncState`. Always call `fs::create_dir_all(parent)` first.
 - **Co-location convention**: state files sit as siblings of the repo dir (`<repo_path>/../<file>.json`). The `path_for_repo(repo_path)` method returns `repo_path.parent().unwrap_or(repo_path).join("<file>.json")`.
 - **Non-fatal side-effect writes**: wrap state file writes in `if let Err(e) = ... { tracing::warn!(...) }` — never fail the main operation on bookkeeping errors.
@@ -27,4 +31,27 @@ Corrective Plan: N/A
   - `cargo fmt` reformats long `if let Err(e) = <multiline>` chains to single-line; avoid manual line-breaking
   - The `path_for_repo` pattern (`parent().unwrap_or(self)`) is used consistently for all co-located state files
   - `push_impl` has multiple early-return paths (dry_run, nothing changed, nothing staged) — `push_op_start` is only consumed on the success path, but Rust doesn't warn since the variable IS referenced
+---
+
+## 2026-04-03 - US-002
+Session: N/A
+Review Outcome: PASS
+Trajectory: ON_TRACK
+Trajectory Notes: N/A
+Corrective Plan: N/A
+- Created `StatusArgs { verbose, porcelain, no_color }` pub struct with `#[derive(Default)]`
+- Created `StatusFormatter<W: io::Write>` with `ok/warn/err/kv` methods and ANSI color constants
+- Added `should_use_color(no_color_flag)` — checks flag → NO_COLOR env → isTerminal()
+- Replaced old `status_impl(config_path, home)` with `status_impl(args, config_path, home)` + inner `status_write<W>`
+- Implemented `emit_config_machine_section` — machine+remote combined line, per-agent sessions-dir checks
+- Updated `main.rs` `Status` command with 3 new flag fields; match arm constructs `StatusArgs`
+- Updated 4 existing status tests to use new `StatusArgs` struct
+- Added 13 new unit tests (formatter symbols, ANSI codes, porcelain kv, color suppression, config-ok/missing/sessions-missing)
+- All 380 unit + 8 integration tests pass; clippy, fmt, deny clean
+- **Learnings for future iterations:**
+  - `writeln!(self.writer, "{color}...")` — `cargo fmt` reformats long `writeln!` calls to multi-line; don't fight it
+  - `use super::*` in `mod tests` DOES import private items (child modules access parent private items in Rust)
+  - `config::Config` is accessible because `config/mod.rs` re-exports it with `pub use schema::Config`
+  - `if !a && !b { ...block } else { ... }` pattern triggers `clippy::collapsible_else_if` \u2014 use `if/else if` chains instead
+  - The `emit_config_machine_section` returns `io::Result<()>`; callers in `status_write` use `?` which coerces `io::Error` to `anyhow::Error` automatically
 ---

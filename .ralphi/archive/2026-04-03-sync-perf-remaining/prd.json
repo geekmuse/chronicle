@@ -18,12 +18,9 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 1,
-      "status": "done",
+      "status": "open",
       "dependsOn": [],
-      "notes": "Keep SyncState minimal — only the three fields needed by the status display. Atomic write pattern mirrors the existing StateCache pattern in src/scan/mod.rs.",
-      "startedAt": "2026-04-03T02:55:50.430Z",
-      "updatedAt": "2026-04-03T03:00:44.892Z",
-      "completedAt": "2026-04-03T03:00:44.892Z"
+      "notes": "Keep SyncState minimal — only the three fields needed by the status display. Atomic write pattern mirrors the existing StateCache pattern in src/scan/mod.rs."
     },
     {
       "id": "US-002",
@@ -40,12 +37,9 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 2,
-      "status": "done",
+      "status": "open",
       "dependsOn": [],
-      "notes": "Used manual ANSI codes (no new dependency). TTY detection via std::io::IsTerminal. StatusFormatter<W: io::Write> for testable output. status_write() inner fn captures output in tests.",
-      "startedAt": "2026-04-03T03:00:44.894Z",
-      "updatedAt": "2026-04-03T03:11:00.000Z",
-      "completedAt": "2026-04-03T03:11:00.000Z"
+      "notes": "Use the termcolor crate (already a transitive dep via other crates) or manual ANSI codes — whichever avoids adding a new direct dependency. TTY detection: use std::io::IsTerminal (stable since Rust 1.70) or atty if already present."
     },
     {
       "id": "US-003",

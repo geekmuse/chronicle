@@ -1,0 +1,95 @@
+{
+  "project": "chronicle",
+  "branchName": "ralph/sync-perf-remaining",
+  "description": "Address remaining sync performance issues and gaps identified in docs/research/003-sync-performance-validation.md: implement materialization state cache to avoid reading all repo files when remote changes arrive, apply the conditional materialize fast-path to pull_impl, add advisory file locking to prevent concurrent sync cascades, and update documentation.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Apply conditional materialize fast-path to pull_impl",
+      "description": "Gap 1 from the validation: pull_impl calls materialize_repo_to_local unconditionally even when integrate_remote_changes returns 0 (nothing new from remote). Apply the same remote_integrated > 0 guard that sync_impl already uses, so a pull with no remote changes skips the full 1.74 GB materialize pass.",
+      "acceptanceCriteria": [
+        "pull_impl checks the return value of integrate_remote_changes and only calls materialize_repo_to_local when integrated > 0",
+        "When integrated == 0, pull_impl prints a message indicating nothing to materialize and returns materialized = 0",
+        "Existing pull tests continue to pass (pull_materialize_decanonicalize_writes_to_local_dir does not go through pull_impl's git path so is unaffected)",
+        "Add a unit test confirming pull skips materialize when no remote changes arrived",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 1,
+      "status": "open",
+      "dependsOn": [],
+      "notes": "Quick win — mirrors the sync_impl fix from commit eb248c0. Located in src/cli/mod.rs pull_impl function."
+    },
+    {
+      "id": "US-002",
+      "title": "Add MaterializeCache schema and persistence",
+      "description": "Create a MaterializeCache struct that tracks the mtime/size of repo working-tree files at the time they were last materialized to local agent directories. This is the foundation for skipping unchanged files during materialization (the main remaining perf issue from the investigation). Use the same patterns as the existing StateCache: HashMap keyed by repo-relative path, JSON serialization, atomic write, path_for_repo co-location.",
+      "acceptanceCriteria": [
+        "New MaterializeCache struct in src/scan/mod.rs (or a new src/materialize_cache.rs module) with: files: HashMap<String, MaterializeFileState> where MaterializeFileState has repo_mtime: DateTime<Utc> and repo_size: u64",
+        "MaterializeCache has load(path) and save(path) methods matching StateCache's API (missing file returns empty cache, atomic write via temp file + rename)",
+        "MaterializeCache::path_for_repo(repo_path) returns <repo_path>/../materialize-state.json (sibling of repo dir, same pattern as StateCache)",
+        "Add a config_hash: String field to MaterializeCache that stores a hash of the canonicalization config (level + home_token) — used for invalidation in US-004",
+        "Unit tests: load missing file returns empty, save/load round-trip, path_for_repo returns expected suffix",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 2,
+      "status": "open",
+      "dependsOn": [],
+      "notes": "Schema/persistence layer only — wiring into materialize_agent_dir is US-003. Keep the struct simple; mirror StateCache patterns exactly."
+    },
+    {
+      "id": "US-003",
+      "title": "Wire MaterializeCache into materialize_agent_dir to skip unchanged files",
+      "description": "Integrate the MaterializeCache from US-002 into the materialize_agent_dir function. Before reading each repo file, check if its mtime/size matches the cached state. If so, skip reading, de-canonicalizing, and comparing that file entirely. Update the cache after successful materialization. This eliminates the ~2.5 minute full-repo read when only a handful of files actually changed.",
+      "acceptanceCriteria": [
+        "materialize_repo_to_local accepts a &mut MaterializeCache parameter (or loads/saves it internally)",
+        "materialize_agent_dir checks each repo file's fs::metadata mtime/size against the cache before reading; unchanged files are skipped entirely (no fs::read_to_string)",
+        "After successfully writing (or confirming identical content in) a local file, the cache entry for that repo file is updated with current mtime/size",
+        "The MaterializeCache is persisted after a successful materialize pass in both sync_impl and pull_impl",
+        "If config_hash in the loaded cache differs from the current canonicalization config hash, the cache is cleared (full re-materialization) and config_hash is updated",
+        "Existing materialize tests pass — materialize_agent_dir_full_writes_all_files, materialize_agent_dir_partial_limits_per_subdir, pull_materialize_decanonicalize_writes_to_local_dir",
+        "Add a test: after materialization, a second call with unchanged repo files produces materialize count 0 (cache hit)",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 3,
+      "status": "open",
+      "dependsOn": ["US-002"],
+      "notes": "This is the main performance fix. The key insight is that repo mtime only changes when integrate_remote_changes writes new content — so on a typical cron run with remote changes, only the handful of changed files will be read."
+    },
+    {
+      "id": "US-004",
+      "title": "Add advisory file lock to prevent concurrent sync processes",
+      "description": "Gap 2 from the validation: there is no concurrency protection — overlapping cron-invoked sync processes can queue on the git index lock, creating a cascade of back-to-back syncs. Add an advisory file lock (flock on Unix) at the start of sync_impl. If the lock cannot be acquired (another sync is running), log a message and exit cleanly without error.",
+      "acceptanceCriteria": [
+        "sync_impl acquires an advisory flock on a lock file (e.g., <repo_path>/../chronicle.lock) at the start of execution",
+        "If the lock is already held (EWOULDBLOCK / non-blocking flock fails), sync_impl prints a message like '[sync] Another sync is in progress — skipping this run.' and returns Ok(()) without error",
+        "The lock is released automatically when the File handle is dropped (end of sync_impl scope or early return)",
+        "push_impl also acquires the same lock with the same behavior",
+        "Use std::fs and libc/nix flock (or fs2 crate if already available) — prefer std over third-party crates per project config rules",
+        "Add a unit test that verifies the lock file path derivation",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check && cargo deny check pass",
+        "If a new dependency is needed, verify it passes cargo deny check (license allowlist)"
+      ],
+      "priority": 4,
+      "status": "open",
+      "dependsOn": [],
+      "notes": "Use non-blocking flock (LOCK_EX | LOCK_NB) so a second process fails fast rather than blocking. The lock file should be co-located with state.json (sibling of repo dir). On non-Unix platforms, skip locking gracefully."
+    },
+    {
+      "id": "US-005",
+      "title": "Update documentation, CHANGELOG, and version for sync perf improvements",
+      "description": "Update all project documentation to reflect the sync performance improvements delivered in this branch. Bump the version in Cargo.toml and add a CHANGELOG entry. Update AGENTS.md current version. Cross-reference the research docs.",
+      "acceptanceCriteria": [
+        "CHANGELOG.md has a new version entry documenting: materialization state cache, pull_impl fast-path, advisory file lock",
+        "Cargo.toml version is bumped appropriately (PATCH bump for perf/fix changes)",
+        "AGENTS.md Current Version field matches the new Cargo.toml version",
+        "docs/research/002-sync-performance-investigation.md has date_modified updated and status set to reflect that the remaining issue is now fixed",
+        "docs/research/003-sync-performance-validation.md has date_modified updated if any findings changed",
+        "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
+      ],
+      "priority": 5,
+      "status": "open",
+      "dependsOn": ["US-001", "US-002", "US-003", "US-004"],
+      "notes": "Final housekeeping story. Do not bump version until all other stories are complete."
+    }
+  ]
+}
