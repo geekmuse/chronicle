@@ -418,6 +418,23 @@ pub fn lock_file_path(repo_path: &Path) -> PathBuf {
         .join("chronicle.lock")
 }
 
+/// RAII guard returned by [`try_acquire_sync_lock`].
+///
+/// Dropping this value releases the advisory `flock` **and deletes the lock
+/// file**, so that `chronicle status` and `chronicle doctor` show
+/// `Lock State: free` after a clean sync exit rather than a stale-lock warning.
+struct SyncLockGuard {
+    _file: fs::File, // kept alive to hold the flock; released on drop
+    path: PathBuf,
+}
+
+impl Drop for SyncLockGuard {
+    fn drop(&mut self) {
+        // Best-effort delete — ignore errors (e.g. already removed).
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 /// Tries to open and exclusively lock `<parent_of_repo>/chronicle.lock` in
 /// a non-blocking fashion, with stale-lock recovery.
 ///
@@ -428,11 +445,14 @@ pub fn lock_file_path(repo_path: &Path) -> PathBuf {
 /// - `< 0`: disable all stale-lock recovery (original v0.4.2 behaviour).
 ///
 /// Returns:
-/// - `Ok(Some(file))` — lock acquired; caller must keep `file` alive
-///   for the duration of the critical section (dropped ⇒ lock released).
+/// - `Ok(Some(guard))` — lock acquired; dropping the guard releases the
+///   flock and deletes the lock file.
 /// - `Ok(None)` — another process already holds the lock.
 /// - `Err(_)` — unexpected I/O error.
-fn try_acquire_sync_lock(repo_path: &Path, lock_timeout_secs: i64) -> Result<Option<fs::File>> {
+fn try_acquire_sync_lock(
+    repo_path: &Path,
+    lock_timeout_secs: i64,
+) -> Result<Option<SyncLockGuard>> {
     let lock_path = lock_file_path(repo_path);
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent)
@@ -445,7 +465,10 @@ fn try_acquire_sync_lock(repo_path: &Path, lock_timeout_secs: i64) -> Result<Opt
         .with_context(|| format!("flock failed on {}", lock_path.display()))?
     {
         stamp_lock_file(&file)?;
-        return Ok(Some(file));
+        return Ok(Some(SyncLockGuard {
+            _file: file,
+            path: lock_path,
+        }));
     }
 
     // Lock is held — check for staleness (unless recovery is disabled).
@@ -463,7 +486,10 @@ fn try_acquire_sync_lock(repo_path: &Path, lock_timeout_secs: i64) -> Result<Opt
             .with_context(|| format!("flock failed on {}", lock_path.display()))?
         {
             stamp_lock_file(&file2)?;
-            return Ok(Some(file2));
+            return Ok(Some(SyncLockGuard {
+                _file: file2,
+                path: lock_path,
+            }));
         }
     }
 
@@ -5935,8 +5961,12 @@ mod tests {
         assert_eq!(pid, std::process::id(), "PID must match current process");
         let _ts: u64 = parts[1].parse().expect("timestamp must be a number");
 
-        // Drop the lock; on Unix this releases the flock.
+        // Drop the lock: releases the flock AND deletes the file.
         drop(lock);
+        assert!(
+            !lock_path.exists(),
+            "chronicle.lock must be deleted after the guard is dropped"
+        );
     }
 
     #[cfg(unix)]
