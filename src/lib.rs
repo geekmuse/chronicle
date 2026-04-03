@@ -31,6 +31,7 @@ pub mod agents;
 pub mod canon;
 pub mod cli;
 pub mod config;
+pub mod doctor;
 pub mod errors;
 pub mod git;
 pub mod materialize_cache;
