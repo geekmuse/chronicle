@@ -5,26 +5,29 @@
   "userStories": [
     {
       "id": "US-001",
-      "title": "Expand proptest generators — richer home/subpath, content templates, nested JSON, and array tests",
-      "description": "Extend the existing proptest suite in src/canon/levels.rs and src/canon/mod.rs to cover a much broader input space. No production code changes — test-only.\n\n1. arb_home_path(): add usernames with dots (first.last), hyphens (brad-matic), and spaces (First Last); add longer home roots (/home/ubuntu, /Users/...).\n2. arb_subpath(): add components with spaces (my project), dots (main.rs, v1.2.3), and deeper paths (up to 8 components).\n3. Content templates: replace the single 'file at {path} done' template with a set: path-only, embedded mid-sentence, same path twice, two different subpaths, XML-attribute context, URL-then-path context.\n4. Deeply nested JSON proptest: generate arbitrary JSON objects up to 4 levels deep where leaf strings may contain home paths; assert round-trip at level 3.\n5. Array-of-strings proptest: place multiple home-path strings in a JSON array value and verify all canonicalize and restore correctly.",
+      "title": "Expand proptest generators \u2014 richer home/subpath, content templates, nested JSON, and array tests",
+      "description": "Extend the existing proptest suite in src/canon/levels.rs and src/canon/mod.rs to cover a much broader input space. No production code changes \u2014 test-only.\n\n1. arb_home_path(): add usernames with dots (first.last), hyphens (brad-matic), and spaces (First Last); add longer home roots (/home/ubuntu, /Users/...).\n2. arb_subpath(): add components with spaces (my project), dots (main.rs, v1.2.3), and deeper paths (up to 8 components).\n3. Content templates: replace the single 'file at {path} done' template with a set: path-only, embedded mid-sentence, same path twice, two different subpaths, XML-attribute context, URL-then-path context.\n4. Deeply nested JSON proptest: generate arbitrary JSON objects up to 4 levels deep where leaf strings may contain home paths; assert round-trip at level 3.\n5. Array-of-strings proptest: place multiple home-path strings in a JSON array value and verify all canonicalize and restore correctly.",
       "acceptanceCriteria": [
         "arb_home_path() generates at least: plain username, username with dot, username with hyphen, username with space, /home/<user> root, /Users/<user> root",
         "arb_subpath() generates at least: plain component, component with space, component with dot, 5-8 component deep paths",
-        "Content template proptest uses all six templates defined in spec §3.1.3; each template produces a valid round-trip",
+        "Content template proptest uses all six templates defined in spec \u00a73.1.3; each template produces a valid round-trip",
         "A proptest named roundtrip_deeply_nested_json generates JSON objects up to 4 levels deep and asserts decanon(canon(line, 3)) == line",
-        "A proptest named roundtrip_array_of_strings generates a JSON object with an array-of-string value containing 1–5 home-path strings and asserts round-trip",
+        "A proptest named roundtrip_array_of_strings generates a JSON object with an array-of-string value containing 1\u20135 home-path strings and asserts round-trip",
         "All existing tests continue to pass unchanged",
         "cargo test passes; cargo clippy -- -D warnings clean; cargo fmt --check clean"
       ],
       "priority": 1,
-      "status": "open",
+      "status": "done",
       "dependsOn": [],
-      "notes": "Touch only #[cfg(test)] blocks in src/canon/levels.rs and src/canon/mod.rs. Do not modify production code or the L2 field whitelist."
+      "notes": "Touch only #[cfg(test)] blocks in src/canon/levels.rs and src/canon/mod.rs. Do not modify production code or the L2 field whitelist.",
+      "startedAt": "2026-04-03T03:37:13.734Z",
+      "updatedAt": "2026-04-03T03:45:37.985Z",
+      "completedAt": "2026-04-03T03:45:37.985Z"
     },
     {
       "id": "US-002",
       "title": "Cargo-fuzz workspace, fuzz_roundtrip target, and seed corpus",
-      "description": "Create the fuzz/ sub-workspace and implement the fuzz_roundtrip libFuzzer target as specified in spec §3.2.1 and §3.2.2.\n\n1. Create fuzz/Cargo.toml as a separate workspace (not merged into the root workspace) with libfuzzer-sys and arbitrary as dev-dependencies, depending on the chronicle crate via path.\n2. Create fuzz/fuzz_targets/fuzz_roundtrip.rs: interpret raw bytes as (home_path_len_byte, level_byte, rest=JSON); build a TokenRegistry with the extracted home; pick level 2 or 3; assert decanon(canon(line, level)) == line when canonicalize_line succeeds.\n3. Create fuzz/corpus/fuzz_roundtrip/ with at least two seed files: one minimal JSON line using /Users/testuser/Dev/project as home, one representing a typical Claude session JSONL entry (sanitized).\n4. Verify cargo +nightly fuzz build fuzz_roundtrip succeeds locally.",
+      "description": "Create the fuzz/ sub-workspace and implement the fuzz_roundtrip libFuzzer target as specified in spec \u00a73.2.1 and \u00a73.2.2.\n\n1. Create fuzz/Cargo.toml as a separate workspace (not merged into the root workspace) with libfuzzer-sys and arbitrary as dev-dependencies, depending on the chronicle crate via path.\n2. Create fuzz/fuzz_targets/fuzz_roundtrip.rs: interpret raw bytes as (home_path_len_byte, level_byte, rest=JSON); build a TokenRegistry with the extracted home; pick level 2 or 3; assert decanon(canon(line, level)) == line when canonicalize_line succeeds.\n3. Create fuzz/corpus/fuzz_roundtrip/ with at least two seed files: one minimal JSON line using /Users/testuser/Dev/project as home, one representing a typical Claude session JSONL entry (sanitized).\n4. Verify cargo +nightly fuzz build fuzz_roundtrip succeeds locally.",
       "acceptanceCriteria": [
         "fuzz/Cargo.toml exists as a valid standalone workspace with [dependencies] chronicle = { path = '..' } and [dev-dependencies] libfuzzer-sys, arbitrary",
         "fuzz/fuzz_targets/fuzz_roundtrip.rs compiles with cargo +nightly fuzz build fuzz_roundtrip",
@@ -36,14 +39,19 @@
         "cargo test and cargo clippy -- -D warnings still pass at the root workspace level"
       ],
       "priority": 2,
-      "status": "open",
-      "dependsOn": ["US-001"],
-      "notes": "The fuzz/ workspace must NOT be added to the root Cargo.toml workspace members (cargo-fuzz manages its own workspace). Check that cargo deny check still passes at root after fuzz/ is added."
+      "status": "done",
+      "dependsOn": [
+        "US-001"
+      ],
+      "notes": "The fuzz/ workspace must NOT be added to the root Cargo.toml workspace members (cargo-fuzz manages its own workspace). Check that cargo deny check still passes at root after fuzz/ is added.",
+      "startedAt": "2026-04-03T03:45:37.988Z",
+      "updatedAt": "2026-04-03T03:59:38.341Z",
+      "completedAt": "2026-04-03T03:59:38.341Z"
     },
     {
       "id": "US-003",
-      "title": "CI integration — fuzz build-only step in ci.yml and scheduled fuzz.yml workflow",
-      "description": "Add CI support for the fuzz target as specified in spec §3.2.3. The fuzz target must compile on every CI push but only run on a weekly schedule.\n\n1. Add a 'fuzz-build' step to .github/workflows/ci.yml and .forgejo/workflows/ci.yml: install Rust nightly, run cargo +nightly fuzz build fuzz_roundtrip (build only, no run).\n2. Create .github/workflows/fuzz.yml: scheduled workflow (cron: weekly, e.g. '0 2 * * 0') that installs Rust nightly and runs cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=60; fails the workflow on any crash or panic.\n3. Create .forgejo/workflows/fuzz.yml mirroring the GitHub workflow.",
+      "title": "CI integration \u2014 fuzz build-only step in ci.yml and scheduled fuzz.yml workflow",
+      "description": "Add CI support for the fuzz target as specified in spec \u00a73.2.3. The fuzz target must compile on every CI push but only run on a weekly schedule.\n\n1. Add a 'fuzz-build' step to .github/workflows/ci.yml and .forgejo/workflows/ci.yml: install Rust nightly, run cargo +nightly fuzz build fuzz_roundtrip (build only, no run).\n2. Create .github/workflows/fuzz.yml: scheduled workflow (cron: weekly, e.g. '0 2 * * 0') that installs Rust nightly and runs cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=60; fails the workflow on any crash or panic.\n3. Create .forgejo/workflows/fuzz.yml mirroring the GitHub workflow.",
       "acceptanceCriteria": [
         ".github/workflows/ci.yml contains a new step (or job) that runs cargo +nightly fuzz build fuzz_roundtrip using a nightly Rust toolchain",
         ".forgejo/workflows/ci.yml mirrors the same fuzz build step",
@@ -54,9 +62,14 @@
         "cargo test, cargo clippy -- -D warnings, cargo fmt --check, cargo deny check all still pass"
       ],
       "priority": 3,
-      "status": "open",
-      "dependsOn": ["US-002"],
-      "notes": "Check existing ci.yml structure carefully before adding the nightly step — match the existing job/step style. The fuzz job can run on ubuntu-latest. For Forgejo, match the existing runner labels used in .forgejo/workflows/ci.yml."
+      "status": "done",
+      "dependsOn": [
+        "US-002"
+      ],
+      "notes": "Check existing ci.yml structure carefully before adding the nightly step \u2014 match the existing job/step style. The fuzz job can run on ubuntu-latest. For Forgejo, match the existing runner labels used in .forgejo/workflows/ci.yml.",
+      "startedAt": "2026-04-03T03:59:38.342Z",
+      "updatedAt": "2026-04-03T04:02:05.839268Z",
+      "completedAt": "2026-04-03T04:02:05.839268Z"
     }
   ]
 }

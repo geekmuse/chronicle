@@ -54,6 +54,21 @@ jobs:
       - name: cargo-deny
         run: cargo deny check
 
+  fuzz-build:
+    name: Fuzz build (nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz build
+        run: cargo +nightly fuzz build fuzz_roundtrip
+
   # Uncomment and configure if you have a self-hosted macOS runner registered
   # with Forgejo (label: macos or self-hosted,macos).
   #

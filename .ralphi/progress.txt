@@ -1,50 +1,17 @@
 ## Codebase Patterns
-- **Scheduler section pattern**: split into `emit_scheduler_from_status(fmt, &ScheduleStatus)` (pure, testable, no I/O) and `emit_scheduler_section(fmt)` (calls `crontab_read()` then delegates). Unit tests inject synthetic `ScheduleStatus` values — no crontab process spawned.
-- **next_run_secs helper**: `fn next_run_secs(interval_name: &str) -> Option<u64>` — parses `Xm`/`Xh` suffix, computes `interval_secs - (now_secs % interval_secs)`. Returns `None` for unknown formats; callers omit 'next run in' clause gracefully.
-- **Verbose section pattern**: accept `verbose: bool` in emit functions; collect paths/values during normal processing then print indented extras in a post-block `if verbose { ... }`. Avoid a second scan pass.
-- **Porcelain completeness**: emit all spec §3.3 keys in every run. On config error, emit the remaining keys with empty values (`fmt.kv("key", "")?`) so scripts always receive the full key set.
-- **fmt.writer direct access**: `writeln!(fmt.writer, "  ...")` is valid from within functions that have a `&mut StatusFormatter<W>`. `fmt.writer` is a public field. Used for verbose indented output lines that don't carry symbols.
-- **emit_* section pattern**: each status section is a private `fn emit_<name>_section<W: io::Write>(fmt, ...) -> io::Result<()>`. Wired in `status_write` after config is loaded. Errors within a section use `fmt.warn/err` (never propagate) — status always succeeds.
-- **Read-only status rule**: `emit_pending_files_section` and `emit_lock_state_section` are strictly read-only; they load state files but never write them.
-- **Lock state logic**: lock file format is `"<PID> <UNIX_TIMESTAMP>"`. Stale = `pid_dead || age_exceeded`. Use `.is_some_and(|p| !is_process_alive(p))` for dead-PID check (clippy prefers `is_some_and` over `map_or(false, ...)`). `#[allow(clippy::cast_sign_loss)]` on a `let` statement (not on an expression — that is a nightly-only feature).
-- **SystemTime → DateTime<Utc>**: use `(std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts)).into()` to convert a u64 Unix timestamp — avoids extra chrono imports and is free of deprecation warnings.
-- **Status formatter pattern**: `StatusFormatter<W: io::Write>` takes a generic writer for testability. Tests pass `&mut Vec<u8>` to capture output. `ok/warn/err` are no-ops in porcelain mode; `kv` is a no-op outside porcelain mode. Color codes (ANSI_GREEN/YELLOW/RED/RESET constants) applied to the symbol only.
-- **should_use_color helper**: `pub fn should_use_color(no_color_flag: bool) -> bool` — checks flag, then `NO_COLOR` env var, then `io::stdout().is_terminal()`. Marked `#[must_use]`.
-- **Private inner write function**: `status_write<W: io::Write>(args, config_path, home, use_color, writer)` is private but accessible from `mod tests` (child modules can access parent private items in Rust). Allows output capture without spawning a process.
-- **Config re-export**: `config::Config` is available directly (via `pub use schema::Config` in `config/mod.rs`). No need to spell out `config::schema::Config` in function signatures.
-- **Atomic file write pattern**: serialize to `.<name>.<pid>.<nanos>.tmp` sibling, then `fs::rename` to target. Used by `StateCache`, `MaterializeCache`, and now `SyncState`. Always call `fs::create_dir_all(parent)` first.
-- **Co-location convention**: state files sit as siblings of the repo dir (`<repo_path>/../<file>.json`). The `path_for_repo(repo_path)` method returns `repo_path.parent().unwrap_or(repo_path).join("<file>.json")`.
-- **Non-fatal side-effect writes**: wrap state file writes in `if let Err(e) = ... { tracing::warn!(...) }` — never fail the main operation on bookkeeping errors.
-- **Operation timing**: capture `std::time::Instant::now()` AFTER lock acquisition (before real work), use `.elapsed()` at end for accurate duration excluding jitter.
-- **Module registration**: new modules must be added to `src/lib.rs` as `pub mod <name>;` so integration tests can import them.
----
-
-## 2026-04-03 - US-004
-Session: N/A
-Review Outcome: PASS
-Trajectory: ON_TRACK
-Trajectory Notes: N/A
-Corrective Plan: N/A
-- Added `next_run_secs(interval_name)` helper — parses `Xm`/`Xh`, computes seconds-to-next-boundary via modulo on Unix timestamp
-- Added `emit_scheduler_from_status(fmt, &ScheduleStatus)` — pure testable core; handles installed/not_installed/malformed with correct symbols and porcelain keys
-- Added `emit_scheduler_section(fmt)` — calls `crontab_read()` then delegates; errors displayed as ⚠ lines (never propagates)
-- Wired `emit_scheduler_section` into `status_write` after `emit_lock_state_section`
-- Updated `emit_config_machine_section` to accept `verbose: bool` — prints canon level, lock timeout, agent enable state when verbose
-- Updated `emit_pending_files_section` to accept `verbose: bool` — collects `(source_dir, abs_path)` pairs during scan, prints indented relative paths when verbose
-- Added `porcelain completeness` to config error path: emits all remaining keys with empty values
-- 16 new unit tests: scheduler_{not_installed,installed,installed_next_run,malformed}, porcelain scheduler variants, next_run_secs bounds, verbose pending/config, happy-path all-sections, porcelain all-keys, error-path config_ok=false, always-exits-0
-- 3 new integration tests in `tests/integration.rs`: happy path, porcelain happy path, error path missing sessions
-- Total: 417 tests pass (406 unit + 11 integration); clippy, fmt, deny clean
-- **Learnings for future iterations:**
-  - Split I/O-dependent emit functions into a pure inner helper (testable) + thin outer wrapper (reads real crontab/file). Unit tests inject synthetic data into the inner helper.
-  - `writeln!(fmt.writer, "...")` is valid when `fmt.writer` is a pub field and the caller holds `&mut StatusFormatter<W>`.
-  - `cargo fmt` reformats single-line `assert!` calls with long messages to multi-line. Don't fight it.
-  - Porcelain completeness: always emit all keys even on error paths (use empty values). Scripts rely on stable key set.
+- `prop_assert_eq!` (proptest macro) does NOT support implicit `{var}` capture in its format string argument — use explicit positional form `"msg {}", var` instead.
+- `prop_oneof!` boxes all branches internally, so mixing `&str` (regex) strategies with `prop_map` results in one block is fine; no manual `.boxed()` needed.
+- `Just(String::from("..."))` is idiomatic for generating a single fixed string value in a proptest strategy.
+- When building JSON for proptest round-trips, prefer `serde_json::json!({...})` + `to_string` over raw `format!` strings — it handles escaping of special chars (e.g. `"` in XML attributes) transparently.
+- Pre-commit hook (`prek`) stashes unstaged changes and runs the full test suite; a known lock-file race in `push_merges_new_entries_with_existing_repo_content` occasionally fires under parallel execution — passes in isolation.
+- `serde_json` Object uses BTreeMap (alphabetical key order). Any fuzz target or proptest that compares JSON strings after parse→serialize must pre-normalise inputs or it will see spurious key-order failures.
+- `serde_json` float serialisation is non-idempotent for some large numeric literals; double-normalise and skip non-idempotent inputs in fuzz targets.
+- cargo-fuzz binary targets require `libfuzzer-sys` in `[dependencies]`, NOT `[dev-dependencies]`; fuzz workspace must have `[workspace]` + `.gitignore` covering `target/` and `artifacts/`.
 ---
 
 ## PRD Run Context
-PRD Branch: ralph/status-improvements
-Started: 2026-04-03T02:55:50.428Z
+PRD Branch: ralph/l3-canon-hardening
+Started: 2026-04-03T03:37:13.732Z
 ---
 
 ## 2026-04-03 - US-001
@@ -53,16 +20,17 @@ Review Outcome: PASS
 Trajectory: ON_TRACK
 Trajectory Notes: N/A
 Corrective Plan: N/A
-- Created `src/sync_state.rs` with `SyncOp` enum (Sync/Push/Pull, serde lowercase), `SyncState` struct (3 fields), `sync_state_path()`, `write_sync_state()` (atomic), `read_sync_state()` (None on missing)
-- Registered module in `src/lib.rs` as `pub mod sync_state`
-- Added `use crate::sync_state::{self, SyncOp}` import to `src/cli/mod.rs`
-- Wired `write_sync_state` into `sync_impl`, `push_impl`, `pull_impl`: `Instant::now()` captured after lock acquisition; write call after state-cache save; failures logged as warnings (non-fatal)
-- 9 unit tests: path helper, round-trips for all 3 ops, missing-file None, create-parent-dirs, lowercase serde, last_sync_time recency
-- All 367 tests pass; clippy, fmt, deny clean
+- Replaced `arb_subpath()` with a richer version covering plain, space, and dot components up to 8 deep.
+- Added `arb_home_path()` generating plain/dot/hyphen/space usernames with both `/Users` and `/home` roots.
+- Added `prop_l3_content_templates` proptest: six templates (path-only, mid-sentence, same-twice, two-subpaths, XML-attr, URL-then-path).
+- Added `roundtrip_deeply_nested_json` proptest: 4-level deep JSON with two leaf home-paths, level-3 canon.
+- Added `roundtrip_array_of_strings` proptest: JSON array of 1–5 home-path strings, level-3 canon.
+- All 409 tests pass; clippy, fmt, deny clean. Commit: 3d4e3cc.
+- Files changed: src/canon/levels.rs (test block only)
 - **Learnings for future iterations:**
-  - `cargo fmt` reformats long `if let Err(e) = <multiline>` chains to single-line; avoid manual line-breaking
-  - The `path_for_repo` pattern (`parent().unwrap_or(self)`) is used consistently for all co-located state files
-  - `push_impl` has multiple early-return paths (dry_run, nothing changed, nothing staged) — `push_op_start` is only consumed on the success path, but Rust doesn't warn since the variable IS referenced
+  - `prop_assert_eq!` macro does not support implicit captures — use positional args.
+  - `serde_json::json!` is the cleanest way to build test JSON with special chars.
+  - Pre-commit hook parallelism can cause lock-file flake; retry usually succeeds.
 ---
 
 ## 2026-04-03 - US-002
@@ -71,21 +39,23 @@ Review Outcome: PASS
 Trajectory: ON_TRACK
 Trajectory Notes: N/A
 Corrective Plan: N/A
-- Created `StatusArgs { verbose, porcelain, no_color }` pub struct with `#[derive(Default)]`
-- Created `StatusFormatter<W: io::Write>` with `ok/warn/err/kv` methods and ANSI color constants
-- Added `should_use_color(no_color_flag)` — checks flag → NO_COLOR env → isTerminal()
-- Replaced old `status_impl(config_path, home)` with `status_impl(args, config_path, home)` + inner `status_write<W>`
-- Implemented `emit_config_machine_section` — machine+remote combined line, per-agent sessions-dir checks
-- Updated `main.rs` `Status` command with 3 new flag fields; match arm constructs `StatusArgs`
-- Updated 4 existing status tests to use new `StatusArgs` struct
-- Added 13 new unit tests (formatter symbols, ANSI codes, porcelain kv, color suppression, config-ok/missing/sessions-missing)
-- All 380 unit + 8 integration tests pass; clippy, fmt, deny clean
+- Created fuzz/ sub-workspace as a standalone cargo workspace (not in root workspace members).
+- fuzz/Cargo.toml: libfuzzer-sys + serde_json in [dependencies], chronicle via path, arbitrary in [dev-dependencies].
+- fuzz/fuzz_targets/fuzz_roundtrip.rs: interprets raw bytes as (home_path_len_byte, level_byte, home_path, json_line); builds TokenRegistry; asserts decanon(canon(input, level)) == input.
+- Two correctness subtleties discovered during live fuzzing and fixed:
+  1. serde_json BTreeMap key ordering: JSON must be double-normalised so key order is stable before round-trip comparison.
+  2. serde_json float non-idempotency: large integer literals (e.g. 33333...e+31) serialise differently across two passes; fixed by filtering to JSON objects only and double-normalising.
+- fuzz/corpus/fuzz_roundtrip/seed_simple.bin: L2 seed with /Users/testuser/Dev/project.
+- fuzz/corpus/fuzz_roundtrip/seed_claude.bin: L3 seed with /Users/testuser and sanitised Claude session JSONL.
+- fuzz/.gitignore: excludes fuzz/target and fuzz/artifacts.
+- cargo +nightly fuzz build: passes; 10-second seed run: ~1M executions, zero crashes.
+- Commit: 7782293
+- Files changed: fuzz/.gitignore, fuzz/Cargo.lock, fuzz/Cargo.toml, fuzz/corpus/fuzz_roundtrip/seed_simple.bin, fuzz/corpus/fuzz_roundtrip/seed_claude.bin, fuzz/fuzz_targets/fuzz_roundtrip.rs
 - **Learnings for future iterations:**
-  - `writeln!(self.writer, "{color}...")` — `cargo fmt` reformats long `writeln!` calls to multi-line; don't fight it
-  - `use super::*` in `mod tests` DOES import private items (child modules access parent private items in Rust)
-  - `config::Config` is accessible because `config/mod.rs` re-exports it with `pub use schema::Config`
-  - `if !a && !b { ...block } else { ... }` pattern triggers `clippy::collapsible_else_if` \u2014 use `if/else if` chains instead
-  - The `emit_config_machine_section` returns `io::Result<()>`; callers in `status_write` use `?` which coerces `io::Error` to `anyhow::Error` automatically
+  - cargo-fuzz requires libfuzzer-sys in [dependencies] (not [dev-dependencies]) for binary targets — the PRD spec was incorrect about this.
+  - serde_json's Object type uses BTreeMap (alphabetical key order); fuzz targets testing JSON round-trips must pre-normalise inputs.
+  - serde_json float serialisation is NOT always idempotent across two parse→serialize passes for certain numeric literals. Use a double-normalisation guard to filter out affected inputs.
+  - The fuzz/ workspace must have its own [workspace] section and a .gitignore covering target/ and artifacts/ to avoid committing hundreds of corpus files.
 ---
 
 ## 2026-04-03 - US-003
@@ -94,15 +64,14 @@ Review Outcome: PASS
 Trajectory: ON_TRACK
 Trajectory Notes: N/A
 Corrective Plan: N/A
-- Added `emit_last_sync_section` — reads `sync_state.json` via `read_sync_state()`; emits ✓ + timestamp+duration or ⚠ "never"; porcelain keys `last_sync_time` and `last_sync_duration_ms`
-- Added `emit_pending_files_section` — loads `state.json` via `StateCache::load`, runs `scan_dir` for each enabled agent, counts non-Unchanged entries; emits ✓ "none" or ⚠ "N file(s) changed"; porcelain key `pending_files`; read-only (no cache write)
-- Added `emit_lock_state_section` — reads `chronicle.lock` format `"<PID> <UNIX_TIMESTAMP>"`; checks PID liveness with `is_process_alive` and age against `lock_timeout_secs`; emits ✓ "free", ⚠ "held by PID N since ts", or ✗ "stale lock (PID N dead)"; porcelain key `lock_state`
-- Updated `status_write` to derive `repo_path` from config and call all three new functions
-- Added 10 unit tests: last-sync-present, last-sync-absent, last-sync-porcelain, pending-files-zero, pending-files-nonzero, pending-files-porcelain, lock-free, lock-held-live, lock-stale, lock-porcelain
-- All 390 tests pass; clippy, fmt, deny clean
+- Added `fuzz-build` job to `.github/workflows/ci.yml`: installs nightly toolchain, installs cargo-fuzz, runs `cargo +nightly fuzz build fuzz_roundtrip` (build only, no fuzzer execution).
+- Added `fuzz-build` job to `.forgejo/workflows/ci.yml`: mirrors GitHub job using unpinned action refs matching existing Forgejo style.
+- Created `.github/workflows/fuzz.yml`: scheduled workflow (cron `'0 2 * * 0'`, every Sunday 02:00 UTC) + `workflow_dispatch`; installs nightly Rust and cargo-fuzz; runs `cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=60`. libFuzzer exits non-zero on any crash so the workflow fails automatically.
+- Created `.forgejo/workflows/fuzz.yml`: mirrors the GitHub fuzz workflow.
+- Files changed: .github/workflows/ci.yml, .forgejo/workflows/ci.yml, .github/workflows/fuzz.yml (new), .forgejo/workflows/fuzz.yml (new)
+- All quality checks pass: cargo test, clippy, fmt --check, deny check. Commit: 0ce0b6d.
 - **Learnings for future iterations:**
-  - `map_or(false, |x| ...)` → clippy::unnecessary_map_or → use `.is_some_and(|x| ...)` instead
-  - `#[allow(clippy::cast_sign_loss)]` must be on a `let` statement, not on an expression (expression attributes are nightly-only, E0658)
-  - For stale-lock test, use own PID + timestamp=0 (year 1970); age >> default 300s → age_exceeded fires deterministically
-  - `(UNIX_EPOCH + Duration::from_secs(ts)).into::<DateTime<Utc>>()` is the cleanest way to convert u64 Unix seconds to DateTime<Utc> without extra imports
+  - `cargo +nightly fuzz build` / `fuzz run` are invoked from the **project root** (parent of `fuzz/`), not from inside the fuzz/ workspace directory.
+  - For nightly-only CI jobs, use `dtolnay/rust-toolchain@nightly` (no hash pin needed since nightly is inherently floating).
+  - The scheduled fuzz workflow does not need explicit failure logic — libFuzzer returns exit code 77 on crash, which GitHub/Forgejo treat as workflow failure.
 ---

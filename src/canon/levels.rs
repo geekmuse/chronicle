@@ -367,10 +367,43 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// Generate a valid path-like string under the given home.
+    /// Generate a subpath with 1–8 components.
+    ///
+    /// Components may be plain alphanumeric, contain a space (e.g. `my project`),
+    /// or contain a dot (e.g. `main.rs`, `v1.2`).
     fn arb_subpath() -> impl Strategy<Value = String> {
-        prop::collection::vec("[a-zA-Z0-9_][a-zA-Z0-9_-]{0,8}", 1..=4)
-            .prop_map(|parts| parts.join("/"))
+        let component = prop_oneof![
+            // plain: "myproject", "src", "Dev"
+            "[a-zA-Z0-9_][a-zA-Z0-9_]{0,8}",
+            // with space: "my project", "hello world"
+            ("[a-zA-Z][a-zA-Z]{1,5}", "[a-zA-Z][a-zA-Z]{1,5}")
+                .prop_map(|(a, b)| format!("{a} {b}")),
+            // with dot: "main.rs", "v1.2"
+            ("[a-zA-Z][a-zA-Z0-9]{1,5}", "[a-zA-Z0-9]{1,4}").prop_map(|(a, b)| format!("{a}.{b}")),
+        ];
+        prop::collection::vec(component, 1..=8).prop_map(|parts| parts.join("/"))
+    }
+
+    /// Generate a complete home-directory path string.
+    ///
+    /// Covers plain usernames, usernames with dots (e.g. `first.last`), hyphens
+    /// (e.g. `brad-matic`), and spaces (e.g. `First Last`), plus both
+    /// `/Users/<user>` and `/home/<user>` root prefixes.
+    fn arb_home_path() -> impl Strategy<Value = String> {
+        let username = prop_oneof![
+            // plain: "alice", "testuser"
+            "[a-zA-Z][a-zA-Z0-9]{2,8}",
+            // with dot: "first.last"
+            ("[a-zA-Z][a-zA-Z0-9]{2,5}", "[a-zA-Z][a-zA-Z0-9]{2,5}")
+                .prop_map(|(a, b)| format!("{a}.{b}")),
+            // with hyphen: "brad-matic"
+            ("[a-zA-Z][a-zA-Z0-9]{2,5}", "[a-zA-Z][a-zA-Z0-9]{2,5}")
+                .prop_map(|(a, b)| format!("{a}-{b}")),
+            // with space: "First Last"
+            ("[A-Z][a-z]{2,5}", "[A-Z][a-z]{2,5}").prop_map(|(a, b)| format!("{a} {b}")),
+        ];
+        let root = prop_oneof![Just(String::from("/Users")), Just(String::from("/home")),];
+        (root, username).prop_map(|(r, u)| format!("{r}/{u}"))
     }
 
     proptest! {
@@ -465,6 +498,109 @@ mod tests {
             let orig: serde_json::Value = serde_json::from_str(&line).unwrap();
             let rest: serde_json::Value = serde_json::from_str(&restored).unwrap();
             prop_assert_eq!(orig, rest, "L3 round-trip failed (home={})", home);
+        }
+    }
+
+    // ── Richer proptest coverage (US-001) ─────────────────────────────────────
+
+    proptest! {
+        /// L3 round-trip with all six content templates (spec §3.1.3).
+        ///
+        /// Each template embeds the generated home path(s) in a different
+        /// syntactic context to verify L3 canonicalization is robust across
+        /// varied text patterns.  Uses `arb_home_path()` and `arb_subpath()`
+        /// for richer coverage (dots, hyphens, spaces, /home roots).
+        #[test]
+        fn prop_l3_content_templates(
+            home in arb_home_path(),
+            sub1 in arb_subpath(),
+            sub2 in arb_subpath(),
+        ) {
+            let r   = reg(&home);
+            let p1  = format!("{home}/{sub1}");
+            let p2  = format!("{home}/{sub2}");
+
+            let templates: Vec<String> = vec![
+                // 1. path-only
+                p1.clone(),
+                // 2. embedded mid-sentence
+                format!("I opened {p1} and edited it"),
+                // 3. same path twice
+                format!("{p1} and {p1}"),
+                // 4. two different subpaths
+                format!("{p1} and {p2}"),
+                // 5. XML-attribute context
+                format!("<file path=\"{p1}\"/>"),
+                // 6. URL-then-path context
+                format!("See https://example.com and {p1}"),
+            ];
+
+            for tmpl in &templates {
+                let obj  = serde_json::json!({"type": "message", "content": tmpl});
+                let line = serde_json::to_string(&obj).unwrap();
+                let canonical = r.canonicalize_line(&line, 3).unwrap();
+                let restored  = r.decanonicalize_line(&canonical).unwrap();
+                let orig: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let rest: serde_json::Value = serde_json::from_str(&restored).unwrap();
+                prop_assert_eq!(orig, rest, "template round-trip failed: {:?}", tmpl);
+            }
+        }
+
+        /// Round-trip for a JSON object up to 4 levels deep where leaf strings
+        /// may contain home-directory paths (spec §3.1.4).
+        ///
+        /// Asserts `decanon(canon(line, 3)) == line`.
+        #[test]
+        fn roundtrip_deeply_nested_json(
+            home     in arb_home_path(),
+            leaf_sub in arb_subpath(),
+            mid_sub  in arb_subpath(),
+        ) {
+            let r         = reg(&home);
+            let leaf_path = format!("{home}/{leaf_sub}");
+            let mid_path  = format!("{home}/{mid_sub}");
+
+            // 4 levels: {"a":{"b":{"c":{"d":"<leaf_path>"}, "text":"..."}}}
+            let obj = serde_json::json!({
+                "a": {
+                    "b": {
+                        "c": {
+                            "d": leaf_path
+                        },
+                        "text": format!("opened {mid_path} successfully")
+                    },
+                    "x": "no-home-path-here"
+                }
+            });
+            let line      = serde_json::to_string(&obj).unwrap();
+            let canonical = r.canonicalize_line(&line, 3).unwrap();
+            let restored  = r.decanonicalize_line(&canonical).unwrap();
+            let orig: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let rest: serde_json::Value = serde_json::from_str(&restored).unwrap();
+            prop_assert_eq!(orig, rest, "deeply nested round-trip failed (home={})", home);
+        }
+
+        /// Round-trip for a JSON object whose value is an array of home-path
+        /// strings (spec §3.1.5).
+        ///
+        /// Generates 1–5 paths and asserts `decanon(canon(line, 3)) == line`.
+        #[test]
+        fn roundtrip_array_of_strings(
+            home in arb_home_path(),
+            subs in prop::collection::vec(arb_subpath(), 1..=5),
+        ) {
+            let r      = reg(&home);
+            let paths: Vec<serde_json::Value> = subs
+                .iter()
+                .map(|s| serde_json::Value::String(format!("{home}/{s}")))
+                .collect();
+            let obj       = serde_json::json!({"paths": paths});
+            let line      = serde_json::to_string(&obj).unwrap();
+            let canonical = r.canonicalize_line(&line, 3).unwrap();
+            let restored  = r.decanonicalize_line(&canonical).unwrap();
+            let orig: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let rest: serde_json::Value = serde_json::from_str(&restored).unwrap();
+            prop_assert_eq!(orig, rest, "array round-trip failed (home={})", home);
         }
     }
 }
