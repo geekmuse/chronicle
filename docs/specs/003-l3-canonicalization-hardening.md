@@ -1,7 +1,7 @@
 ---
 date_created: 2026-04-03
 date_modified: 2026-04-03
-status: draft
+status: active
 audience: both
 cross_references:
   - docs/001-architecture.md

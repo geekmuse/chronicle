@@ -55,12 +55,19 @@ chronicle/
 │   │   └── feature_request.md
 │   ├── PULL_REQUEST_TEMPLATE.md
 │   └── workflows/
-│       ├── ci.yml                   # GitHub Actions CI (build/lint/test/deny)
-│       └── release.yml              # GitHub Actions release (binary artefacts)
+│       ├── ci.yml                   # GitHub Actions CI (build/lint/test/deny/fuzz-build)
+│       ├── release.yml              # GitHub Actions release (binary artefacts)
+│       └── fuzz.yml                 # Weekly scheduled fuzz run (60 s, nightly)
 ├── .forgejo/                        # Forgejo-specific CI (mirrors .github/workflows)
 │   └── workflows/
 │       ├── ci.yml
-│       └── release.yml
+│       ├── release.yml
+│       └── fuzz.yml
+├── fuzz/                            # cargo-fuzz sub-workspace
+│   ├── Cargo.toml
+│   ├── corpus/fuzz_roundtrip/          # Seed inputs for the fuzz target
+│   └── fuzz_targets/
+│       └── fuzz_roundtrip.rs            # libFuzzer round-trip invariant target
 ├── docs/                            # Project documentation
 │   ├── 001-architecture.md          # System architecture and design
 │   ├── 002-development-guide.md     # Development workflow and tooling
@@ -332,3 +339,7 @@ When investigating a tool, approach, or pattern:
 - [x] Rich `chronicle status` (v0.6.0): `sync_state.json` data layer, `StatusFormatter<W>` with
       ANSI/no-color/TTY detection, Config/Machine, Last Sync, Pending Files, Lock State, Scheduler
       sections; `--verbose`, `--porcelain`, `--no-color` flags
+- [x] L3 canonicalization hardening (v0.7.0): expanded proptest generators (arb_home_path,
+      arb_subpath with spaces/dots, content templates, deeply-nested JSON, array-of-strings);
+      cargo-fuzz sub-workspace with fuzz_roundtrip libFuzzer target and seed corpus;
+      fuzz-build step in CI + weekly scheduled fuzz.yml (GitHub + Forgejo)

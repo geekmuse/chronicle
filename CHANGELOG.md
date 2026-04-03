@@ -13,6 +13,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.7.0] - 2026-04-03
+
+### Added
+- **Expanded proptest generators** — `arb_home_path()` now generates usernames
+  with hyphens, dots, and spaces under both `/Users` and `/home` roots.
+  `arb_subpath()` covers plain, space-containing, and dot-containing components
+  up to 8 levels deep.  Three new property-based tests exercise the round-trip
+  invariant against content templates, deeply-nested (4-level) JSON objects, and
+  arrays of 1–5 home paths.
+- **`cargo-fuzz` sub-workspace and `fuzz_roundtrip` target** — A libFuzzer
+  target (`fuzz/fuzz_targets/fuzz_roundtrip.rs`) verifies the L2/L3
+  canonicalize→decanonicalize round-trip invariant against arbitrary byte
+  inputs.  The target parses inputs as `(home_path_len, level, home_path,
+  json_line)`, double-normalises via `serde_json` to guard against float
+  non-idempotency, and asserts `decanon(canon(x)) == x` for all valid JSON
+  objects.  Ships with two seed corpus entries (`seed_simple.bin`,
+  `seed_claude.bin`).  Live fuzzing uncovered and fixed two correctness issues
+  (BTreeMap key-ordering pre-normalisation; float non-idempotency guard).
+- **Fuzz CI integration** — `fuzz-build` job added to both
+  `.github/workflows/ci.yml` and `.forgejo/workflows/ci.yml` (nightly
+  toolchain, build-only on every PR).  New `.github/workflows/fuzz.yml` and
+  `.forgejo/workflows/fuzz.yml` run the fuzz target for 60 seconds every Sunday
+  at 02:00 UTC; any crash fails the workflow automatically.
+
 ## [0.6.0] - 2026-04-03
 
 ### Added

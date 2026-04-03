@@ -82,6 +82,7 @@ invariant of JSONL session data.
 - **Agent-agnostic** — Supports Pi and Claude Code with extensible agent architecture
 - **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
 - **Rich `status` command** — Human-friendly (✓/⚠/✗) and machine-readable (`--porcelain`) output covering last-sync time/duration/operation, pending-file count, lock state, scheduler health, and per-agent sessions-dir existence; `--verbose` expands file lists and effective config values
+- **Fuzz-tested canonicalization** — A `cargo-fuzz` / libFuzzer target (`fuzz/fuzz_targets/fuzz_roundtrip.rs`) verifies the L2/L3 round-trip invariant against arbitrary inputs; runs weekly in CI (`fuzz.yml`) for 60 seconds with zero-crash enforcement; `fuzz-build` step runs on every PR
 
 ---
 
@@ -405,6 +406,9 @@ cargo test
 
 # Run linter
 cargo clippy -- -D warnings
+
+# Run the libFuzzer fuzz target for 30 seconds (requires nightly)
+cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=30
 ```
 
 See [Development Guide](docs/002-development-guide.md) for full details.
