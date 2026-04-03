@@ -1,77 +1,108 @@
 ## Codebase Patterns
-- `prop_assert_eq!` (proptest macro) does NOT support implicit `{var}` capture in its format string argument — use explicit positional form `"msg {}", var` instead.
-- `prop_oneof!` boxes all branches internally, so mixing `&str` (regex) strategies with `prop_map` results in one block is fine; no manual `.boxed()` needed.
-- `Just(String::from("..."))` is idiomatic for generating a single fixed string value in a proptest strategy.
-- When building JSON for proptest round-trips, prefer `serde_json::json!({...})` + `to_string` over raw `format!` strings — it handles escaping of special chars (e.g. `"` in XML attributes) transparently.
-- Pre-commit hook (`prek`) stashes unstaged changes and runs the full test suite; a known lock-file race in `push_merges_new_entries_with_existing_repo_content` occasionally fires under parallel execution — passes in isolation.
-- `serde_json` Object uses BTreeMap (alphabetical key order). Any fuzz target or proptest that compares JSON strings after parse→serialize must pre-normalise inputs or it will see spurious key-order failures.
-- `serde_json` float serialisation is non-idempotent for some large numeric literals; double-normalise and skip non-idempotent inputs in fuzz targets.
-- cargo-fuzz binary targets require `libfuzzer-sys` in `[dependencies]`, NOT `[dev-dependencies]`; fuzz workspace must have `[workspace]` + `.gitignore` covering `target/` and `artifacts/`.
+- Doctor check functions go in `src/doctor/mod.rs` (extracted from cli/mod.rs because check logic exceeds ~300 lines).
+- All doctor check functions accept injected paths/state to enable unit testing without real FS/network.
+  - Pass a closure `impl Fn(&str) -> Result<(), String>` for network checks (remote reachability).
+  - Pass `&[PathBuf]` for SSH key paths, `&[String]` for crontab lines, `&Path` for lock file.
+- `CheckState` / `CheckResult` constructors (`pass`, `warn`, `error`, `skipped`) keep each call site concise.
+- Use `#[must_use]` on all public check functions that return `Vec<CheckResult>`.
+- The pre-existing flaky test `push_merges_new_entries_with_existing_repo_content` fails under parallel
+  test execution (advisory lock contention). Run `cargo test -- --test-threads=1` for a reliable full run.
+- `cargo deny check` emits warnings for unused license allowances and duplicate `getrandom` versions;
+  these are pre-existing and not errors.
 ---
 
 ## PRD Run Context
-PRD Branch: ralph/l3-canon-hardening
-Started: 2026-04-03T03:37:13.732Z
+PRD Branch: ralph/doctor-command
+Started: 2026-04-03T04:13:24.393Z
 ---
 
-## 2026-04-03 - US-001
-Session: N/A
+## 2026-04-03 — US-001
+Session: iter-b9866bc2
 Review Outcome: PASS
 Trajectory: ON_TRACK
 Trajectory Notes: N/A
 Corrective Plan: N/A
-- Replaced `arb_subpath()` with a richer version covering plain, space, and dot components up to 8 deep.
-- Added `arb_home_path()` generating plain/dot/hyphen/space usernames with both `/Users` and `/home` roots.
-- Added `prop_l3_content_templates` proptest: six templates (path-only, mid-sentence, same-twice, two-subpaths, XML-attr, URL-then-path).
-- Added `roundtrip_deeply_nested_json` proptest: 4-level deep JSON with two leaf home-paths, level-3 canon.
-- Added `roundtrip_array_of_strings` proptest: JSON array of 1–5 home-path strings, level-3 canon.
-- All 409 tests pass; clippy, fmt, deny clean. Commit: 3d4e3cc.
-- Files changed: src/canon/levels.rs (test block only)
+- Created `src/doctor/mod.rs` with:
+  - `CheckState` enum (Pass, Warn, Error, Skipped)
+  - `CheckResult` struct with key/state/detail/hint fields and concise constructors
+  - `check_config(config_path)` → 3 results: config.file, config.toml, config.remote
+  - `check_git(repo_path, remote_url, ssh_key_paths, check_remote)` → 3 results:
+    git.repo, git.remote (skipped when no remote), git.ssh_key (skipped for HTTPS)
+  - `check_agents(pi_enabled, pi_dir, claude_enabled, claude_dir)` → 2 results per agent
+  - `check_scheduler(crontab_lines, lock_path, lock_timeout_secs)` → 2 results
+  - `default_check_remote()` and `default_ssh_key_paths()` for production use
+  - `parse_remote_host_port()` / `split_host_port()` for URL parsing
+  - 23 unit tests covering all pass/warn/error/skipped branches
+- Added `pub mod doctor;` to `src/lib.rs`
+- Files changed: src/doctor/mod.rs (new), src/lib.rs
 - **Learnings for future iterations:**
-  - `prop_assert_eq!` macro does not support implicit captures — use positional args.
-  - `serde_json::json!` is the cleanest way to build test JSON with special chars.
-  - Pre-commit hook parallelism can cause lock-file flake; retry usually succeeds.
+  - Extracted to `src/doctor/mod.rs` immediately because check logic + tests exceeded 300 lines.
+  - The `check_git` closure pattern (`impl Fn(&str) -> Result<(), String>`) is the right way
+    to inject network behaviour; use it for any future command with external I/O.
+  - `is_pid_alive` is now duplicated in cli/mod.rs and doctor/mod.rs. If it grows, extract
+    to a shared internal module (e.g. `src/util.rs`).
+  - Parallel test execution causes flaky lock-contention failures in push tests — known issue.
 ---
 
-## 2026-04-03 - US-002
-Session: N/A
+## 2026-04-03 — US-002
+Session: iter-230fbbcf
 Review Outcome: PASS
 Trajectory: ON_TRACK
 Trajectory Notes: N/A
 Corrective Plan: N/A
-- Created fuzz/ sub-workspace as a standalone cargo workspace (not in root workspace members).
-- fuzz/Cargo.toml: libfuzzer-sys + serde_json in [dependencies], chronicle via path, arbitrary in [dev-dependencies].
-- fuzz/fuzz_targets/fuzz_roundtrip.rs: interprets raw bytes as (home_path_len_byte, level_byte, home_path, json_line); builds TokenRegistry; asserts decanon(canon(input, level)) == input.
-- Two correctness subtleties discovered during live fuzzing and fixed:
-  1. serde_json BTreeMap key ordering: JSON must be double-normalised so key order is stable before round-trip comparison.
-  2. serde_json float non-idempotency: large integer literals (e.g. 33333...e+31) serialise differently across two passes; fixed by filtering to JSON objects only and double-normalising.
-- fuzz/corpus/fuzz_roundtrip/seed_simple.bin: L2 seed with /Users/testuser/Dev/project.
-- fuzz/corpus/fuzz_roundtrip/seed_claude.bin: L3 seed with /Users/testuser and sanitised Claude session JSONL.
-- fuzz/.gitignore: excludes fuzz/target and fuzz/artifacts.
-- cargo +nightly fuzz build: passes; 10-second seed run: ~1M executions, zero crashes.
-- Commit: 7782293
-- Files changed: fuzz/.gitignore, fuzz/Cargo.lock, fuzz/Cargo.toml, fuzz/corpus/fuzz_roundtrip/seed_simple.bin, fuzz/corpus/fuzz_roundtrip/seed_claude.bin, fuzz/fuzz_targets/fuzz_roundtrip.rs
+- Wired `chronicle doctor` into the CLI (src/main.rs + src/cli/mod.rs)
+- Added `DoctorArgs { porcelain: bool, no_color: bool }` struct
+- Added `handle_doctor`, `doctor_impl`, `doctor_write` as layered entry points
+- Added `run_doctor_checks` — collects live check results (FS, network, crontab)
+- Added `format_doctor_results` — pure formatter accepting `DoctorCheckResults`
+  and any `io::Write` writer; tested directly from unit tests
+- Added `emit_doctor_section` — section header + per-check lines + blank line
+- Extended `StatusFormatter<W>` with `section_header`, `hint_line`,
+  `skipped_check`, `blank_line`, `raw_line` methods
+- Exit codes: 0 all-pass, 1 warnings-only, 2 any-error (via std::process::exit)
+- Color logic: NO_COLOR env / --no-color flag / --porcelain all suppress ANSI
+- Files changed: src/main.rs, src/cli/mod.rs, .ralphi/prd.json, .ralphi/progress.txt
 - **Learnings for future iterations:**
-  - cargo-fuzz requires libfuzzer-sys in [dependencies] (not [dev-dependencies]) for binary targets — the PRD spec was incorrect about this.
-  - serde_json's Object type uses BTreeMap (alphabetical key order); fuzz targets testing JSON round-trips must pre-normalise inputs.
-  - serde_json float serialisation is NOT always idempotent across two parse→serialize passes for certain numeric literals. Use a double-normalisation guard to filter out affected inputs.
-  - The fuzz/ workspace must have its own [workspace] section and a .gitignore covering target/ and artifacts/ to avoid committing hundreds of corpus files.
+  - `format_doctor_results` takes `DoctorCheckResults` by value (all Vecs);
+    tests inject fake `DoctorCheckResults` directly — no real FS or crontab needed.
+  - `StatusFormatter.writer` is private; added `raw_line` for unconditional writes.
+  - `blank_line` / `section_header` / `hint_line` check `self.porcelain` so
+    US-003 porcelain mode can set `porcelain=true` on the formatter to suppress
+    all human-readable lines and emit its own via `raw_line`.
+  - The summary uses `·` (U+00B7 middle dot) and `→` (U+2192) for hint prefix —
+    confirm these render on target terminals before changing.
 ---
 
-## 2026-04-03 - US-003
-Session: N/A
+## 2026-04-03 — US-003
+Session: iter-780516bf
 Review Outcome: PASS
 Trajectory: ON_TRACK
 Trajectory Notes: N/A
 Corrective Plan: N/A
-- Added `fuzz-build` job to `.github/workflows/ci.yml`: installs nightly toolchain, installs cargo-fuzz, runs `cargo +nightly fuzz build fuzz_roundtrip` (build only, no fuzzer execution).
-- Added `fuzz-build` job to `.forgejo/workflows/ci.yml`: mirrors GitHub job using unpinned action refs matching existing Forgejo style.
-- Created `.github/workflows/fuzz.yml`: scheduled workflow (cron `'0 2 * * 0'`, every Sunday 02:00 UTC) + `workflow_dispatch`; installs nightly Rust and cargo-fuzz; runs `cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=60`. libFuzzer exits non-zero on any crash so the workflow fails automatically.
-- Created `.forgejo/workflows/fuzz.yml`: mirrors the GitHub fuzz workflow.
-- Files changed: .github/workflows/ci.yml, .forgejo/workflows/ci.yml, .github/workflows/fuzz.yml (new), .forgejo/workflows/fuzz.yml (new)
-- All quality checks pass: cargo test, clippy, fmt --check, deny check. Commit: 0ce0b6d.
+- Implemented `--porcelain` mode in `format_doctor_results`:
+  - Emits `check.<key>=<state>[:<detail>]` for every CheckResult in section order
+  - Values: `ok[:<detail>]`, `warning:<detail>`, `error:<detail>`, `skipped[:<reason>]`
+  - Emits `summary.errors=N`, `summary.warnings=N`, `summary.passed=N` as last three lines
+  - No ANSI codes; `--porcelain` implies `--no-color` (enforced in handle_doctor)
+- Added `porcelain_check_value()` private helper for state→porcelain-string mapping
+- Made `DoctorCheckResults` pub with pub fields (enables integration test injection)
+- Made `format_doctor_results` pub (enables integration test direct calls)
+- Updated DoctorArgs.porcelain doc comment (removed deferred TODO)
+- Added 3 integration tests in `tests/integration.rs`:
+  - `doctor_porcelain_happy_path_exit_0`: injects all-pass `DoctorCheckResults`
+    via `format_doctor_results`; verifies exit 0, all check lines ok/skipped, no ANSI
+  - `doctor_porcelain_config_file_missing_exit_2`: calls `doctor_write` with
+    non-existent config path; verifies exit 2, `check.config.file=error:<detail>`
+  - `doctor_porcelain_agent_sessions_dir_missing`: calls `doctor_write` with
+    absent pi sessions dir; verifies exit >= 1, `check.agents.pi=error:<detail>`
+- All 14 integration tests pass (`cargo test -- --test-threads=1`)
+- Files changed: src/cli/mod.rs, tests/integration.rs, .ralphi/prd.json, .ralphi/progress.txt
 - **Learnings for future iterations:**
-  - `cargo +nightly fuzz build` / `fuzz run` are invoked from the **project root** (parent of `fuzz/`), not from inside the fuzz/ workspace directory.
-  - For nightly-only CI jobs, use `dtolnay/rust-toolchain@nightly` (no hash pin needed since nightly is inherently floating).
-  - The scheduled fuzz workflow does not need explicit failure logic — libFuzzer returns exit code 77 on crash, which GitHub/Forgejo treat as workflow failure.
+  - `format_doctor_results` must be pub for integration tests to inject results;
+    the pattern (inject `DoctorCheckResults` directly) avoids all FS/network deps.
+  - For `doctor_write` integration tests (real FS): omit remote_url in config to
+    get `git.remote=Skipped` rather than a slow network timeout.
+  - `porcelain_check_value` is the single source of truth for the format;
+    keeping it separate makes it easy to audit against spec.
+  - No new dependencies required — all US-003 features are pure Rust std.
 ---

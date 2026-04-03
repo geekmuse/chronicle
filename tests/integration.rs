@@ -863,3 +863,222 @@ fn status_integration_error_path_missing_sessions_dir() {
     status_impl(&args, &config_path, &home)
         .expect("status_impl must return Ok even when sessions dir is missing");
 }
+
+// ===========================================================================
+// US-003: chronicle doctor — porcelain output, integration tests
+// ===========================================================================
+
+/// Write a minimal doctor-test config: no remote URL, pi agent enabled/disabled
+/// with the given sessions directory path (may or may not exist).
+fn write_doctor_config(config_path: &Path, repo_path: &Path, pi_sessions: &Path, pi_enabled: bool) {
+    let enabled_str = if pi_enabled { "true" } else { "false" };
+    let toml = format!(
+        "[general]\nmachine_name = \"test-doctor\"\n\n\
+         [storage]\nrepo_path = \"{}\"\n\n\
+         [agents.pi]\nenabled = {}\nsession_dir = \"{}\"\n\n\
+         [agents.claude]\nenabled = false\n",
+        repo_path.display(),
+        enabled_str,
+        pi_sessions.display(),
+    );
+    fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    fs::write(config_path, toml.as_bytes()).unwrap();
+}
+
+/// Build a [`DoctorCheckResults`] where every check passes or is skipped
+/// (all-pass happy-path fixture).
+fn make_all_pass_doctor_results() -> chronicle::cli::DoctorCheckResults {
+    use chronicle::doctor::CheckResult;
+    chronicle::cli::DoctorCheckResults {
+        config: vec![
+            CheckResult::pass("config.file", "found at /tmp/test/config.toml"),
+            CheckResult::pass("config.toml", "valid"),
+            CheckResult::pass("config.remote", "https://github.com/user/repo.git"),
+        ],
+        git: vec![
+            CheckResult::pass("git.repo", "initialized at /tmp/test/repo"),
+            CheckResult::pass("git.remote", "reachable"),
+            CheckResult::skipped("git.ssh_key", "HTTPS remote"),
+        ],
+        agents: vec![
+            CheckResult::pass("agents.pi", "5 session file(s) in /tmp/test/pi"),
+            CheckResult::pass("agents.claude", "3 session file(s) in /tmp/test/claude"),
+        ],
+        scheduler: vec![
+            CheckResult::pass("scheduler.cron", "installed"),
+            CheckResult::pass("scheduler.lock", "free"),
+        ],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: happy path — all checks pass, exit 0, all porcelain lines ok/skipped
+// ---------------------------------------------------------------------------
+
+/// Verify that when all check results are Pass or Skipped, exit code is 0 and
+/// every porcelain check line carries an `ok` or `skipped` value.
+#[test]
+fn doctor_porcelain_happy_path_exit_0() {
+    use chronicle::cli::{format_doctor_results, DoctorArgs};
+
+    let results = make_all_pass_doctor_results();
+    let args = DoctorArgs {
+        porcelain: true,
+        no_color: false,
+    };
+    let mut buf = Vec::<u8>::new();
+    let exit_code = format_doctor_results(&args, &results, false, &mut buf).unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert_eq!(exit_code, 0, "all-pass must exit 0; output:\n{out}");
+
+    // Every check line must carry an ok or skipped value (no error/warning).
+    for line in out.lines() {
+        if line.starts_with("check.") {
+            assert!(
+                line.contains("=ok") || line.contains("=skipped"),
+                "happy-path check must be ok or skipped; line: {line}\nfull output:\n{out}"
+            );
+        }
+    }
+
+    // Mandatory keys with ok values.
+    assert!(
+        out.contains("check.config.file=ok:"),
+        "must have check.config.file=ok; output:\n{out}"
+    );
+    assert!(
+        out.contains("check.git.repo=ok:"),
+        "must have check.git.repo=ok; output:\n{out}"
+    );
+    assert!(
+        out.contains("check.agents.pi=ok:"),
+        "must have check.agents.pi=ok; output:\n{out}"
+    );
+
+    // Summary lines.
+    assert!(
+        out.contains("summary.errors=0"),
+        "must have summary.errors=0; output:\n{out}"
+    );
+    assert!(
+        out.contains("summary.warnings=0"),
+        "must have summary.warnings=0; output:\n{out}"
+    );
+    assert!(
+        out.contains("summary.passed="),
+        "must have summary.passed; output:\n{out}"
+    );
+
+    // No ANSI escape codes in porcelain output.
+    assert!(
+        !out.contains("\x1b["),
+        "porcelain output must not contain ANSI codes; output:\n{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: missing config file — exit 2, check.config.file=error:<detail>
+// ---------------------------------------------------------------------------
+
+/// Verify that a missing config file causes exit 2 and a porcelain
+/// `check.config.file=error:<detail>` line, with no ANSI codes.
+#[test]
+fn doctor_porcelain_config_file_missing_exit_2() {
+    use chronicle::cli::{doctor_write, DoctorArgs};
+
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    // Deliberately absent — never created.
+    let config_path = d.join("nonexistent_config.toml");
+    let home = d.join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    let args = DoctorArgs {
+        porcelain: true,
+        no_color: false,
+    };
+    let mut buf = Vec::<u8>::new();
+    let exit_code = doctor_write(&args, &config_path, &home, false, &mut buf).unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert_eq!(
+        exit_code, 2,
+        "missing config file must exit 2; output:\n{out}"
+    );
+
+    // check.config.file must be an error line with a detail.
+    let config_file_line = out
+        .lines()
+        .find(|l| l.starts_with("check.config.file="))
+        .expect("check.config.file must appear in porcelain output");
+    assert!(
+        config_file_line.starts_with("check.config.file=error:"),
+        "config.file must be error:<detail>; line: {config_file_line}"
+    );
+
+    assert!(
+        out.contains("summary.errors="),
+        "must have summary.errors line; output:\n{out}"
+    );
+
+    // No ANSI escape codes.
+    assert!(
+        !out.contains("\x1b["),
+        "porcelain output must not contain ANSI codes; output:\n{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: sessions dir absent — check.agents.pi=error:<detail>
+// ---------------------------------------------------------------------------
+
+/// Verify that when the Pi sessions directory is missing, `check.agents.pi`
+/// carries an `error:<detail>` porcelain value.
+#[test]
+fn doctor_porcelain_agent_sessions_dir_missing() {
+    use chronicle::cli::{doctor_write, DoctorArgs};
+
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    let config_path = d.join("config.toml");
+    let repo_path = d.join("repo");
+    // Deliberately absent — never created.
+    let pi_sessions = d.join("pi_sessions_absent");
+    let home = d.join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    // Config is valid; Pi enabled; sessions dir absent; no remote URL.
+    write_doctor_config(&config_path, &repo_path, &pi_sessions, true);
+
+    let args = DoctorArgs {
+        porcelain: true,
+        no_color: false,
+    };
+    let mut buf = Vec::<u8>::new();
+    let exit_code = doctor_write(&args, &config_path, &home, false, &mut buf).unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    // Exit code must be >= 1 (agents.pi error ⇒ 2; scheduler.cron warn ⇒ 1 at minimum).
+    assert!(
+        exit_code >= 1,
+        "missing sessions dir must exit 1 or 2; exit={exit_code}; output:\n{out}"
+    );
+
+    // check.agents.pi must be an error line.
+    let agents_pi_line = out
+        .lines()
+        .find(|l| l.starts_with("check.agents.pi="))
+        .expect("check.agents.pi must appear in porcelain output");
+    assert!(
+        agents_pi_line.starts_with("check.agents.pi=error:"),
+        "agents.pi must be error:<detail> when sessions dir is absent; \
+         line: {agents_pi_line}\nfull output:\n{out}"
+    );
+
+    // No ANSI escape codes in porcelain output.
+    assert!(
+        !out.contains("\x1b["),
+        "porcelain output must not contain ANSI codes; output:\n{out}"
+    );
+}
