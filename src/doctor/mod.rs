@@ -192,6 +192,19 @@ pub fn default_ssh_key_paths(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Returns `true` when an SSH agent is reachable via `SSH_AUTH_SOCK`.
+///
+/// Covers keys loaded via `ssh-add`, macOS Keychain agent, 1Password SSH
+/// agent, and similar forwarding mechanisms.  Chronicle can authenticate
+/// through the agent even when no key file exists on disk.
+#[must_use]
+pub fn ssh_agent_available() -> bool {
+    std::env::var_os("SSH_AUTH_SOCK")
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .is_some_and(|p| p.exists())
+}
+
 /// Returns `true` when the remote URL uses HTTP or HTTPS.
 #[must_use]
 pub fn is_https_remote(url: &str) -> bool {
@@ -293,7 +306,7 @@ pub fn default_check_remote(url: &str) -> Result<(), String> {
 /// |--------------|----------------|
 /// | `git.repo`   | Local repository is initialized |
 /// | `git.remote` | Remote is reachable (skipped if `remote_url` is empty) |
-/// | `git.ssh_key`| An SSH key is readable (skipped for HTTPS remotes or no remote) |
+/// | `git.ssh_key`| An SSH key file is readable **or** an SSH agent is reachable (skipped for HTTPS remotes or no remote) |
 ///
 /// `ssh_key_paths` — ordered list of SSH key paths to probe; pass
 /// `default_ssh_key_paths(home)` in production.
@@ -301,12 +314,17 @@ pub fn default_check_remote(url: &str) -> Result<(), String> {
 /// `check_remote` — closure invoked with the remote URL; returns `Ok(())`
 /// on success or an `Err(reason)` string.  Inject a stub in tests to avoid
 /// real network calls.
+///
+/// `ssh_agent_fn` — returns `true` when an SSH agent is reachable (e.g.
+/// `SSH_AUTH_SOCK` is set and the socket exists).  Pass
+/// `|| ssh_agent_available()` in production; inject a stub in tests.
 #[must_use]
 pub fn check_git(
     repo_path: &Path,
     remote_url: &str,
     ssh_key_paths: &[PathBuf],
     check_remote: impl Fn(&str) -> Result<(), String>,
+    ssh_agent_fn: impl Fn() -> bool,
 ) -> Vec<CheckResult> {
     let mut results = Vec::with_capacity(3);
 
@@ -344,19 +362,23 @@ pub fn check_git(
     if is_https_remote(remote_url) {
         results.push(CheckResult::skipped("git.ssh_key", "HTTPS remote"));
     } else {
-        let found = ssh_key_paths
+        let found_file = ssh_key_paths
             .iter()
             .find(|p| p.exists() && fs::metadata(p).is_ok());
-        if let Some(key_path) = found {
+        if let Some(key_path) = found_file {
             results.push(CheckResult::pass(
                 "git.ssh_key",
                 format!("found {}", key_path.display()),
             ));
+        } else if ssh_agent_fn() {
+            // No key file on disk, but a loaded agent is a valid auth source
+            // (ssh-add, macOS Keychain, 1Password SSH agent, agent forwarding, …).
+            results.push(CheckResult::pass("git.ssh_key", "key loaded in SSH agent"));
         } else {
             results.push(CheckResult::error(
                 "git.ssh_key",
-                "no readable SSH key found",
-                "create an SSH key (`ssh-keygen`) or switch to an HTTPS remote",
+                "no SSH key file found and no SSH agent available",
+                "add your key to the agent (`ssh-add`), create a key file (`ssh-keygen`), or switch to an HTTPS remote",
             ));
         }
     }
@@ -670,7 +692,7 @@ mod tests {
         let repo_path = dir.path().join("repo");
         fs::create_dir_all(&repo_path).unwrap();
 
-        let results = check_git(&repo_path, "", &[], |_| Ok(()));
+        let results = check_git(&repo_path, "", &[], |_| Ok(()), || false);
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].key, "git.repo");
         assert_eq!(results[0].state, CheckState::Error);
@@ -684,7 +706,7 @@ mod tests {
         let repo_path = dir.path().join("repo");
         git2::Repository::init(&repo_path).unwrap();
 
-        let results = check_git(&repo_path, "", &[], |_| Ok(()));
+        let results = check_git(&repo_path, "", &[], |_| Ok(()), || false);
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].state, CheckState::Pass, "git.repo");
         assert_eq!(results[1].state, CheckState::Skipped, "git.remote");
@@ -697,9 +719,13 @@ mod tests {
         let repo_path = dir.path().join("repo");
         git2::Repository::init(&repo_path).unwrap();
 
-        let results = check_git(&repo_path, "https://github.com/user/repo.git", &[], |_| {
-            Ok(())
-        });
+        let results = check_git(
+            &repo_path,
+            "https://github.com/user/repo.git",
+            &[],
+            |_| Ok(()),
+            || false,
+        );
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].state, CheckState::Pass, "git.repo");
         assert_eq!(results[1].state, CheckState::Pass, "git.remote");
@@ -712,9 +738,13 @@ mod tests {
         let repo_path = dir.path().join("repo");
         git2::Repository::init(&repo_path).unwrap();
 
-        let results = check_git(&repo_path, "https://github.com/user/repo.git", &[], |_| {
-            Err("connection refused".to_owned())
-        });
+        let results = check_git(
+            &repo_path,
+            "https://github.com/user/repo.git",
+            &[],
+            |_| Err("connection refused".to_owned()),
+            || false,
+        );
         assert_eq!(results[1].state, CheckState::Error, "git.remote");
         assert!(
             results[1].detail.contains("unreachable"),
@@ -739,6 +769,7 @@ mod tests {
             "git@github.com:user/repo.git",
             &[key_path.clone()],
             |_| Ok(()),
+            || false,
         );
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].state, CheckState::Pass, "git.repo");
@@ -752,22 +783,50 @@ mod tests {
     }
 
     #[test]
-    fn check_git_ssh_remote_no_key_returns_error() {
+    fn check_git_ssh_remote_agent_available_no_key_file_returns_pass() {
         let dir = TempDir::new().unwrap();
         let repo_path = dir.path().join("repo");
         git2::Repository::init(&repo_path).unwrap();
 
-        // Point to a path that does not exist.
+        // No key file on disk, but agent reports keys loaded.
         let nonexistent = dir.path().join("id_ed25519_missing");
         let results = check_git(
             &repo_path,
             "git@github.com:user/repo.git",
             &[nonexistent],
             |_| Ok(()),
+            || true, // agent available
+        );
+        assert_eq!(
+            results[2].state,
+            CheckState::Pass,
+            "agent covers missing key file"
+        );
+        assert!(
+            results[2].detail.contains("SSH agent"),
+            "detail: {}",
+            results[2].detail
+        );
+    }
+
+    #[test]
+    fn check_git_ssh_remote_no_key_no_agent_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let repo_path = dir.path().join("repo");
+        git2::Repository::init(&repo_path).unwrap();
+
+        // No key file and no agent.
+        let nonexistent = dir.path().join("id_ed25519_missing");
+        let results = check_git(
+            &repo_path,
+            "git@github.com:user/repo.git",
+            &[nonexistent],
+            |_| Ok(()),
+            || false, // no agent
         );
         assert_eq!(results[2].state, CheckState::Error, "git.ssh_key");
         assert!(
-            results[2].detail.contains("no readable SSH key"),
+            results[2].detail.contains("no SSH key file"),
             "detail: {}",
             results[2].detail
         );

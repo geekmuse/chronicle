@@ -2710,6 +2710,7 @@ fn run_doctor_checks(config_path: &Path, home: &Path) -> DoctorCheckResults {
                 &remote_url,
                 &ssh_key_paths,
                 doctor::default_check_remote,
+                doctor::ssh_agent_available,
             );
 
             let pi_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
