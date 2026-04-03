@@ -82,6 +82,7 @@ invariant of JSONL session data.
 - **Agent-agnostic** — Supports Pi and Claude Code with extensible agent architecture
 - **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
 - **Rich `status` command** — Human-friendly (✓/⚠/✗) and machine-readable (`--porcelain`) output covering last-sync time/duration/operation, pending-file count, lock state, scheduler health, and per-agent sessions-dir existence; `--verbose` expands file lists and effective config values
+- **`doctor` command** — Pre-flight health check across Config, Git, Agents, and Scheduler subsystems; plain-English remediation hints; `--porcelain` for scripting; exit codes 0/1/2 (pass/warn/error)
 - **Fuzz-tested canonicalization** — A `cargo-fuzz` / libFuzzer target (`fuzz/fuzz_targets/fuzz_roundtrip.rs`) verifies the L2/L3 round-trip invariant against arbitrary inputs; runs weekly in CI (`fuzz.yml`) for 60 seconds with zero-crash enforcement; `fuzz-build` step runs on every PR
 
 ---
@@ -272,6 +273,12 @@ chronicle status --verbose
 
 # Machine-readable key=value output for scripts
 chronicle status --porcelain
+
+# Pre-flight health check (Config, Git, Agents, Scheduler)
+chronicle doctor
+
+# Doctor with machine-readable key=value output
+chronicle doctor --porcelain
 
 # View recent sync errors
 chronicle errors

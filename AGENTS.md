@@ -73,7 +73,10 @@ chronicle/
 │   ├── 002-development-guide.md     # Development workflow and tooling
 │   ├── 003-documentation-standards.md # How docs are structured
 │   ├── specs/                       # Feature specifications and design docs
-│   │   └── 001-initial-delivery.md  # Full project specification (v1.0)
+│   │   ├── 001-initial-delivery.md  # Full project specification (v1.0)
+│   │   ├── 002-status-improvements.md  # Rich status command (v0.6.0)
+│   │   ├── 003-l3-canonicalization-hardening.md  # Fuzz + proptest hardening (v0.7.0)
+│   │   └── 004-doctor-command.md    # chronicle doctor pre-flight health check (v0.8.0)
 │   ├── adrs/                        # Architecture Decision Records
 │   │   └── 001-stale-lock-recovery.md # Stale lock recovery after sleep/suspend
 │   ├── references/                  # CLI reference, config reference
@@ -106,6 +109,8 @@ chronicle/
 │   │   └── commit.rs                # Staging, commit message formatting
 │   ├── agents/
 │   │   └── mod.rs                   # Pi and Claude dir encoding / file naming
+│   ├── doctor/
+│   │   └── mod.rs                   # CheckState/CheckResult types; check_config/git/agents/scheduler
 │   ├── scheduler/                   # Cron scheduling
 │   │   ├── mod.rs
 │   │   └── cron.rs                  # Crontab read/write/install/uninstall
@@ -343,3 +348,8 @@ When investigating a tool, approach, or pattern:
       arb_subpath with spaces/dots, content templates, deeply-nested JSON, array-of-strings);
       cargo-fuzz sub-workspace with fuzz_roundtrip libFuzzer target and seed corpus;
       fuzz-build step in CI + weekly scheduled fuzz.yml (GitHub + Forgejo)
+- [x] `chronicle doctor` command (v0.8.0): CheckState/CheckResult types in src/doctor/mod.rs;
+      check_config, check_git (5 s TCP timeout, SSH-key skip for HTTPS), check_agents
+      (JSONL file count), check_scheduler (cron + lock liveness); DoctorArgs CLI wiring;
+      human-readable grouped output with ANSI symbols; --porcelain key=value mode;
+      exit codes 0/1/2 (pass/warn/error); 23 unit tests + 3 integration tests

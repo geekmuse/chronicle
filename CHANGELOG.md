@@ -13,6 +13,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.8.0] - 2026-04-03
+
+### Added
+- **`chronicle doctor` command** — Pre-flight health check across four subsystems:
+  - *Config*: verifies config file exists, parses as valid TOML, and `git.remote`
+    is set.
+  - *Git*: verifies the local repo is initialised, the remote is reachable (5 s
+    TCP timeout), and at least one SSH key exists (check skipped for HTTPS
+    remotes).
+  - *Agents*: verifies each enabled agent’s sessions directory exists and reports
+    the JSONL file count.
+  - *Scheduler*: verifies the cron entry is installed and no stale lock is held.
+- Plain-English remediation hints follow each failing or warned check.
+- `--porcelain` flag emits stable `check.<key>=<state>[:<detail>]` and
+  `summary.*` lines for scripting.
+- Exit codes: `0` all-pass, `1` warnings-only, `2` any error.
+- Color output uses TTY detection and respects `NO_COLOR` / `--no-color`,
+  consistent with `chronicle status`.
+- `src/doctor/mod.rs` — `CheckState` enum (`Pass`, `Warn`, `Error`, `Skipped`),
+  `CheckResult` struct with concise constructors, `check_config()`, `check_git()`,
+  `check_agents()`, `check_scheduler()`; `default_check_remote()` and
+  `default_ssh_key_paths()` for production use; 23 unit tests.
+- 3 integration tests covering all-pass happy path and two error paths.
+
 ## [0.7.0] - 2026-04-03
 
 ### Added

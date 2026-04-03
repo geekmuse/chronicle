@@ -1,7 +1,7 @@
 ---
 date_created: 2026-04-03
 date_modified: 2026-04-03
-status: draft
+status: active
 audience: both
 cross_references:
   - docs/001-architecture.md
@@ -12,6 +12,7 @@ cross_references:
   - src/git/mod.rs
   - src/scheduler/cron.rs
   - src/agents/mod.rs
+  - src/doctor/mod.rs
 ---
 
 # Spec 004 — `chronicle doctor`
