@@ -108,7 +108,7 @@
     {
       "id": "iter-b9b2eb77",
       "phase": "ralphi-loop-iteration",
-      "status": "running",
+      "status": "completed",
       "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-15-48-648Z_ae226198-7ee0-45c9-9434-a04b5e910de4.jsonl",
       "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-15-48-648Z_ae226198-7ee0-45c9-9434-a04b5e910de4.jsonl",
       "checkpointLeafId": null,
@@ -119,7 +119,35 @@
       "loopId": "loop-33f444ec",
       "iteration": 3,
       "storyId": "US-003",
-      "storyTitle": "Last Sync, Pending Files, and Lock State sections"
+      "storyTitle": "Last Sync, Pending Files, and Lock State sections",
+      "summary": "Implemented US-003: Last Sync, Pending Files, and Lock State sections of `chronicle status`. Added three new private emit functions (emit_last_sync_section, emit_pending_files_section, emit_lock_state_section), wired them into status_write, and added 10 unit tests covering all acceptance criteria. All 390 tests pass; clippy, fmt, and cargo deny clean. Committed as feat(cli): US-003.",
+      "outputs": [
+        "src/cli/mod.rs",
+        ".ralphi/prd.json",
+        ".ralphi/progress.txt"
+      ],
+      "complete": false,
+      "reviewPasses": 1,
+      "trajectory": "ON_TRACK",
+      "reflectionSummary": "US-003 fully implemented and tested. Three data-driven status sections added: Last Sync (reads sync_state.json), Pending Files (uses scan module read-only against state cache), Lock State (reads chronicle.lock, checks PID liveness and age). 10 tests cover all acceptance criteria. One remaining story: US-004 (Scheduler section, --verbose expansion, porcelain completion, integration test).",
+      "nextIterationPlan": "Implement US-004: Scheduler section (crontab installed/not-installed/malformed, next-run estimate), --verbose Pending Files (full file list), --verbose Config (effective values), all remaining porcelain keys, integration test for happy-path and error-path. Check scheduler/cron.rs for existing cron expression parsing before adding cron math.",
+      "completedAt": "2026-04-03T03:23:02.301Z"
+    },
+    {
+      "id": "iter-41a90b4a",
+      "phase": "ralphi-loop-iteration",
+      "status": "running",
+      "sessionKey": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-23-02-317Z_48265cd1-bd01-4502-add2-3afffb5c6c7f.jsonl",
+      "sessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-23-02-317Z_48265cd1-bd01-4502-add2-3afffb5c6c7f.jsonl",
+      "checkpointLeafId": null,
+      "checkpointSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
+      "cwd": "/Users/bradmatic/Dev/geekmuse/chronicle",
+      "createdAt": "2026-04-03T03:23:02.318Z",
+      "autoConfirm": true,
+      "loopId": "loop-33f444ec",
+      "iteration": 4,
+      "storyId": "US-004",
+      "storyTitle": "Scheduler section, --verbose expansion, porcelain completion, and integration test"
     }
   ],
   "loops": [
@@ -127,18 +155,19 @@
       "id": "loop-33f444ec",
       "controllerSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T01-59-41-045Z_b5d09f97-d64e-4382-b985-c2ffd21426e4.jsonl",
       "maxIterations": 50,
-      "iteration": 3,
+      "iteration": 4,
       "active": true,
       "stopRequested": false,
       "createdAt": "2026-04-03T02:55:50.428Z",
       "iterationSessionFiles": [
         "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T02-55-50-430Z_3f0fd802-557d-4d39-b1d6-ef68388e8316.jsonl",
         "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-00-44-893Z_84fdb6ab-bd7e-4d36-9ab4-259ea5626b1e.jsonl",
-        "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-15-48-648Z_ae226198-7ee0-45c9-9434-a04b5e910de4.jsonl"
+        "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-15-48-648Z_ae226198-7ee0-45c9-9434-a04b5e910de4.jsonl",
+        "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-23-02-317Z_48265cd1-bd01-4502-add2-3afffb5c6c7f.jsonl"
       ],
-      "currentIterationStartedAt": "2026-04-03T03:15:48.648Z",
-      "activeIterationSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-15-48-648Z_ae226198-7ee0-45c9-9434-a04b5e910de4.jsonl"
+      "currentIterationStartedAt": "2026-04-03T03:23:02.318Z",
+      "activeIterationSessionFile": "/Users/bradmatic/.pi/agent/sessions/--Users-bradmatic-Dev-geekmuse-chronicle--/2026-04-03T03-23-02-317Z_48265cd1-bd01-4502-add2-3afffb5c6c7f.jsonl"
     }
   ],
-  "savedAt": "2026-04-03T03:15:48.648Z"
+  "savedAt": "2026-04-03T03:23:02.318Z"
 }

@@ -70,8 +70,8 @@
       ],
       "notes": "Re-use the PID liveness check already implemented for stale lock recovery (src/git/mod.rs). Do not trigger a new scan write — status must be read-only with respect to state files.",
       "startedAt": "2026-04-03T03:15:48.648Z",
-      "updatedAt": "2026-04-03T03:30:00.000Z",
-      "completedAt": "2026-04-03T03:30:00.000Z"
+      "updatedAt": "2026-04-03T03:23:02.315Z",
+      "completedAt": "2026-04-03T03:23:02.315Z"
     },
     {
       "id": "US-004",
@@ -90,12 +90,15 @@
         "cargo test && cargo clippy -- -D warnings && cargo fmt --check pass"
       ],
       "priority": 4,
-      "status": "open",
+      "status": "in_progress",
       "dependsOn": [
         "US-002",
         "US-003"
       ],
-      "notes": "For next-run time computation, inspect the existing scheduler/cron.rs for any cron-expression parsing already present before reaching for an external crate. If none exists, a simple 'minutes since last run mod interval' estimate is acceptable."
+      "notes": "For next-run time computation, inspect the existing scheduler/cron.rs for any cron-expression parsing already present before reaching for an external crate. If none exists, a simple 'minutes since last run mod interval' estimate is acceptable.",
+      "startedAt": "2026-04-03T03:23:02.318Z",
+      "updatedAt": "2026-04-03T03:23:02.318Z",
+      "completedAt": null
     }
   ]
 }

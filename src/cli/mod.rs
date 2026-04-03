@@ -2189,20 +2189,112 @@ fn status_write<W: io::Write>(
 
     match config::load(Some(config_path), &CliOverrides::default()) {
         Ok(cfg) => {
-            emit_config_machine_section(&mut fmt, &cfg, home)?;
+            emit_config_machine_section(&mut fmt, &cfg, home, args.verbose)?;
             let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
             emit_last_sync_section(&mut fmt, &repo_path)?;
-            emit_pending_files_section(&mut fmt, &cfg, home, &repo_path)?;
+            emit_pending_files_section(&mut fmt, &cfg, home, &repo_path, args.verbose)?;
             emit_lock_state_section(&mut fmt, &cfg, &repo_path)?;
+            emit_scheduler_section(&mut fmt)?;
         }
         Err(e) => {
             fmt.err("Config", &format!("failed to load: {e}"))?;
             fmt.kv("config_ok", "false")?;
             fmt.kv("config_error", &e.to_string())?;
+            // Emit remaining porcelain keys with empty values so scripts
+            // always receive the full key set even on config error.
+            fmt.kv("last_sync_time", "")?;
+            fmt.kv("last_sync_duration_ms", "")?;
+            fmt.kv("pending_files", "")?;
+            fmt.kv("lock_state", "")?;
+            fmt.kv("scheduler_state", "")?;
+            fmt.kv("scheduler_next_run_secs", "")?;
         }
     }
 
     Ok(())
+}
+
+/// Compute the number of seconds until the next scheduled run for a known
+/// interval name (e.g. `"5m"`, `"1h"`).  Returns `None` when the interval
+/// cannot be parsed or is zero.
+fn next_run_secs(interval_name: &str) -> Option<u64> {
+    let interval_mins: u64 = if let Some(h) = interval_name.strip_suffix('h') {
+        h.parse::<u64>().ok()?.saturating_mul(60)
+    } else if let Some(m) = interval_name.strip_suffix('m') {
+        m.parse::<u64>().ok()?
+    } else {
+        return None;
+    };
+    if interval_mins == 0 {
+        return None;
+    }
+    let secs_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let interval_secs = interval_mins.saturating_mul(60);
+    let secs_into_interval = secs_now % interval_secs;
+    Some(interval_secs - secs_into_interval)
+}
+
+/// Emit the Scheduler section of `chronicle status` (pure, testable).
+///
+/// Accepts an already-parsed [`scheduler_cron::ScheduleStatus`] so unit tests
+/// can inject synthetic values without spawning a `crontab` process.
+fn emit_scheduler_from_status<W: io::Write>(
+    fmt: &mut StatusFormatter<W>,
+    st: &scheduler_cron::ScheduleStatus,
+) -> io::Result<()> {
+    if !st.installed {
+        fmt.warn(
+            "Scheduler",
+            "not installed — run chronicle schedule install",
+        )?;
+        fmt.kv("scheduler_state", "not_installed")?;
+        fmt.kv("scheduler_next_run_secs", "")?;
+        return Ok(());
+    }
+
+    match &st.interval {
+        Some(interval_name) => {
+            let next_secs = next_run_secs(interval_name);
+            let detail = match next_secs {
+                Some(s) => format!("installed — next run in {} min", s.saturating_add(59) / 60),
+                None => "installed".to_owned(),
+            };
+            fmt.ok("Scheduler", &detail)?;
+            fmt.kv("scheduler_state", "installed")?;
+            fmt.kv(
+                "scheduler_next_run_secs",
+                &next_secs.map_or_else(String::new, |s| s.to_string()),
+            )?;
+        }
+        None => {
+            // Installed but cron expression is unrecognised.
+            fmt.err("Scheduler", "cron entry present but unrecognised format")?;
+            fmt.kv("scheduler_state", "malformed")?;
+            fmt.kv("scheduler_next_run_secs", "")?;
+        }
+    }
+    Ok(())
+}
+
+/// Emit the Scheduler section of `chronicle status`.
+///
+/// Reads the real crontab via the scheduler module; errors are displayed
+/// inline as `⚠` lines so that status never fails.
+fn emit_scheduler_section<W: io::Write>(fmt: &mut StatusFormatter<W>) -> io::Result<()> {
+    let lines = match scheduler_cron::crontab_read() {
+        Ok(l) => l,
+        Err(e) => {
+            fmt.warn("Scheduler", &format!("error reading crontab: {e}"))?;
+            fmt.kv("scheduler_state", "not_installed")?;
+            fmt.kv("scheduler_next_run_secs", "")?;
+            return Ok(());
+        }
+    };
+    let st = scheduler_cron::parse_status(&lines);
+    emit_scheduler_from_status(fmt, &st)
 }
 
 /// Emit the Config / Machine section of `chronicle status`.
@@ -2210,6 +2302,7 @@ fn emit_config_machine_section<W: io::Write>(
     fmt: &mut StatusFormatter<W>,
     cfg: &config::Config,
     home: &Path,
+    verbose: bool,
 ) -> io::Result<()> {
     let machine = &cfg.general.machine_name;
     let remote = &cfg.storage.remote_url;
@@ -2260,6 +2353,38 @@ fn emit_config_machine_section<W: io::Write>(
             config_errors.push(msg.clone());
             fmt.err("Config", &msg)?;
         }
+    }
+
+    // Verbose: print effective config values.
+    if verbose {
+        writeln!(
+            fmt.writer,
+            "  canon level    : {}",
+            cfg.canonicalization.level
+        )?;
+        writeln!(
+            fmt.writer,
+            "  lock timeout   : {}s",
+            cfg.general.lock_timeout_secs
+        )?;
+        writeln!(
+            fmt.writer,
+            "  pi agent       : {}",
+            if cfg.agents.pi.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        )?;
+        writeln!(
+            fmt.writer,
+            "  claude agent   : {}",
+            if cfg.agents.claude.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        )?;
     }
 
     // Porcelain keys for the Config / Machine section.
@@ -2316,6 +2441,7 @@ fn emit_pending_files_section<W: io::Write>(
     cfg: &config::Config,
     home: &Path,
     repo_path: &Path,
+    verbose: bool,
 ) -> io::Result<()> {
     let cache_path = scan::StateCache::path_for_repo(repo_path);
     let state_cache = match scan::StateCache::load(&cache_path) {
@@ -2328,16 +2454,22 @@ fn emit_pending_files_section<W: io::Write>(
     };
 
     let mut pending_count = 0usize;
+    let mut pending_paths: Vec<(PathBuf, PathBuf)> = Vec::new(); // (source_dir, abs_path)
     let follow_symlinks = cfg.general.follow_symlinks;
 
     if cfg.agents.pi.enabled {
         let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
         if source_dir.exists() {
             if let Ok(entries) = scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                pending_count += entries
-                    .iter()
+                for e in entries
+                    .into_iter()
                     .filter(|e| e.kind != scan::ChangeKind::Unchanged)
-                    .count();
+                {
+                    pending_count += 1;
+                    if verbose {
+                        pending_paths.push((source_dir.clone(), e.path));
+                    }
+                }
             }
         }
     }
@@ -2346,10 +2478,15 @@ fn emit_pending_files_section<W: io::Write>(
         let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
         if source_dir.exists() {
             if let Ok(entries) = scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                pending_count += entries
-                    .iter()
+                for e in entries
+                    .into_iter()
                     .filter(|e| e.kind != scan::ChangeKind::Unchanged)
-                    .count();
+                {
+                    pending_count += 1;
+                    if verbose {
+                        pending_paths.push((source_dir.clone(), e.path));
+                    }
+                }
             }
         }
     }
@@ -2361,6 +2498,14 @@ fn emit_pending_files_section<W: io::Write>(
             "Pending Files",
             &format!("{pending_count} file(s) changed since last sync"),
         )?;
+        if verbose {
+            for (source_dir, abs_path) in &pending_paths {
+                let rel = abs_path
+                    .strip_prefix(source_dir)
+                    .unwrap_or(abs_path.as_path());
+                writeln!(fmt.writer, "    {}", rel.display())?;
+            }
+        }
     }
     fmt.kv("pending_files", &pending_count.to_string())?;
     Ok(())
@@ -5542,5 +5687,429 @@ mod tests {
         assert!(lock2.is_none(), "recovery disabled: must return None");
         #[cfg(not(unix))]
         let _ = lock2;
+    }
+
+    // -----------------------------------------------------------------------
+    // US-004: Scheduler section, verbose mode, integration-style tests
+    // -----------------------------------------------------------------------
+
+    fn make_schedule_status_installed(interval: &str) -> scheduler_cron::ScheduleStatus {
+        let cron_expr = scheduler_cron::interval_to_cron(interval).0;
+        scheduler_cron::ScheduleStatus {
+            installed: true,
+            interval: Some(interval.to_owned()),
+            cron_expression: Some(cron_expr),
+            binary_path: Some("/usr/local/bin/chronicle".to_owned()),
+        }
+    }
+
+    fn make_schedule_status_not_installed() -> scheduler_cron::ScheduleStatus {
+        scheduler_cron::ScheduleStatus {
+            installed: false,
+            interval: None,
+            cron_expression: None,
+            binary_path: None,
+        }
+    }
+
+    fn make_schedule_status_malformed() -> scheduler_cron::ScheduleStatus {
+        // installed=true but interval=None (unrecognised cron expression).
+        scheduler_cron::ScheduleStatus {
+            installed: true,
+            interval: None,
+            cron_expression: Some("*/7 * * * *".to_owned()),
+            binary_path: Some("/usr/local/bin/chronicle".to_owned()),
+        }
+    }
+
+    #[test]
+    fn scheduler_not_installed_emits_warn() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, false);
+        emit_scheduler_from_status(&mut fmt, &make_schedule_status_not_installed()).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("⚠"), "not-installed must emit ⚠; got: {out}");
+        assert!(
+            out.contains("not installed"),
+            "not-installed must say 'not installed'; got: {out}"
+        );
+    }
+
+    #[test]
+    fn scheduler_installed_emits_ok() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, false);
+        emit_scheduler_from_status(&mut fmt, &make_schedule_status_installed("5m")).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("✓"), "installed must emit ✓; got: {out}");
+        assert!(
+            out.contains("installed"),
+            "installed must say 'installed'; got: {out}"
+        );
+    }
+
+    #[test]
+    fn scheduler_installed_includes_next_run_time() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, false);
+        emit_scheduler_from_status(&mut fmt, &make_schedule_status_installed("5m")).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("next run in"),
+            "installed must include 'next run in'; got: {out}"
+        );
+    }
+
+    #[test]
+    fn scheduler_malformed_emits_err() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, false);
+        emit_scheduler_from_status(&mut fmt, &make_schedule_status_malformed()).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("✗"), "malformed must emit ✗; got: {out}");
+        assert!(
+            out.contains("unrecognised"),
+            "malformed must say 'unrecognised'; got: {out}"
+        );
+    }
+
+    #[test]
+    fn scheduler_porcelain_not_installed() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, true);
+        emit_scheduler_from_status(&mut fmt, &make_schedule_status_not_installed()).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("scheduler_state=not_installed"),
+            "porcelain must emit scheduler_state=not_installed; got: {out}"
+        );
+        assert!(
+            out.contains("scheduler_next_run_secs="),
+            "porcelain must emit scheduler_next_run_secs=; got: {out}"
+        );
+    }
+
+    #[test]
+    fn scheduler_porcelain_installed() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, true);
+        emit_scheduler_from_status(&mut fmt, &make_schedule_status_installed("5m")).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("scheduler_state=installed"),
+            "porcelain must emit scheduler_state=installed; got: {out}"
+        );
+        // next run should be a positive number of seconds
+        assert!(
+            out.contains("scheduler_next_run_secs="),
+            "porcelain must emit scheduler_next_run_secs=; got: {out}"
+        );
+    }
+
+    #[test]
+    fn scheduler_porcelain_malformed() {
+        let mut buf = Vec::<u8>::new();
+        let mut fmt = StatusFormatter::new(&mut buf, false, true);
+        emit_scheduler_from_status(&mut fmt, &make_schedule_status_malformed()).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("scheduler_state=malformed"),
+            "porcelain must emit scheduler_state=malformed; got: {out}"
+        );
+    }
+
+    #[test]
+    fn next_run_secs_returns_value_within_interval() {
+        // 5m interval → next run in [1, 300] seconds.
+        let secs = next_run_secs("5m").expect("5m must return Some");
+        assert!(
+            secs >= 1 && secs <= 300,
+            "next_run_secs for 5m must be in [1, 300]; got {secs}"
+        );
+    }
+
+    #[test]
+    fn next_run_secs_1h_returns_value_within_hour() {
+        let secs = next_run_secs("1h").expect("1h must return Some");
+        assert!(
+            secs >= 1 && secs <= 3600,
+            "next_run_secs for 1h must be in [1, 3600]; got {secs}"
+        );
+    }
+
+    #[test]
+    fn next_run_secs_unknown_returns_none() {
+        assert!(
+            next_run_secs("42q").is_none(),
+            "unknown unit must return None"
+        );
+    }
+
+    #[test]
+    fn verbose_pending_files_shows_paths() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        // Create a session file — state cache is EMPTY so it is detected as New.
+        let session_sub = pi_sessions.join("--proj--");
+        std::fs::create_dir_all(&session_sub).unwrap();
+        std::fs::write(session_sub.join("verbose.jsonl"), b"{}\n").unwrap();
+
+        write_status_config(&config_path, &repo_path, &pi_sessions, "test-machine");
+
+        let args = StatusArgs {
+            verbose: true,
+            no_color: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        // Verbose mode must include the file path (or a relative component).
+        assert!(
+            out.contains("verbose.jsonl"),
+            "verbose pending-files must include file path; got: {out}"
+        );
+    }
+
+    #[test]
+    fn verbose_config_shows_effective_values() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        std::fs::create_dir_all(&pi_sessions).unwrap();
+        write_status_config(&config_path, &repo_path, &pi_sessions, "test-machine");
+
+        let args = StatusArgs {
+            verbose: true,
+            no_color: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("canon level"),
+            "verbose config must show 'canon level'; got: {out}"
+        );
+        assert!(
+            out.contains("lock timeout"),
+            "verbose config must show 'lock timeout'; got: {out}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // US-004 integration-style: all five sections via status_write
+    // -----------------------------------------------------------------------
+
+    /// Write a full config with remote URL and create the pi sessions dir.
+    fn write_full_status_config(
+        config_path: &std::path::Path,
+        repo_path: &std::path::Path,
+        pi_sessions: &std::path::Path,
+        machine_name: &str,
+    ) {
+        let toml = format!(
+            "[general]\nmachine_name = \"{machine_name}\"\n\n\
+             [storage]\nrepo_path = \"{}\"\nremote_url = \"https://example.com/repo.git\"\n\n\
+             [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
+             [agents.claude]\nenabled = false\n",
+            repo_path.display(),
+            pi_sessions.display(),
+        );
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(config_path, toml).unwrap();
+    }
+
+    #[test]
+    fn status_happy_path_all_sections_present() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        std::fs::create_dir_all(&pi_sessions).unwrap();
+        write_full_status_config(&config_path, &repo_path, &pi_sessions, "eager-falcon");
+
+        // Write sync_state.json so Last Sync shows ✓.
+        crate::sync_state::write_sync_state(
+            &repo_path,
+            crate::sync_state::SyncOp::Sync,
+            std::time::Duration::from_millis(500),
+        )
+        .unwrap();
+        // No lock file → lock is free (✓).
+        // No state cache → pi_sessions is empty → 0 pending files (✓).
+
+        let args = StatusArgs {
+            no_color: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        // All five section labels must appear.
+        assert!(
+            out.contains("Machine") || out.contains("eager-falcon"),
+            "Config/Machine section missing; got: {out}"
+        );
+        assert!(
+            out.contains("Last Sync"),
+            "Last Sync section missing; got: {out}"
+        );
+        assert!(
+            out.contains("Pending Files"),
+            "Pending Files section missing; got: {out}"
+        );
+        assert!(
+            out.contains("Lock State"),
+            "Lock State section missing; got: {out}"
+        );
+        assert!(
+            out.contains("Scheduler"),
+            "Scheduler section missing; got: {out}"
+        );
+
+        // Last Sync ✓ because sync_state.json was written.
+        assert!(
+            !out.contains("never"),
+            "happy path: Last Sync must not show 'never'; got: {out}"
+        );
+        // Lock is free.
+        assert!(
+            out.contains("free"),
+            "happy path: lock must be free; got: {out}"
+        );
+        // Pending is none.
+        assert!(
+            out.contains("none"),
+            "happy path: pending files must be 'none'; got: {out}"
+        );
+    }
+
+    #[test]
+    fn status_porcelain_happy_path_all_keys_present() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions");
+        let home = dir.path().to_path_buf();
+
+        std::fs::create_dir_all(&pi_sessions).unwrap();
+        write_full_status_config(&config_path, &repo_path, &pi_sessions, "eager-falcon");
+
+        crate::sync_state::write_sync_state(
+            &repo_path,
+            crate::sync_state::SyncOp::Sync,
+            std::time::Duration::from_millis(1300),
+        )
+        .unwrap();
+
+        let args = StatusArgs {
+            porcelain: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        // All spec §3.3 porcelain keys must be present.
+        let required_keys = [
+            "machine=",
+            "remote=",
+            "last_sync_time=",
+            "last_sync_duration_ms=",
+            "pending_files=",
+            "lock_state=",
+            "scheduler_state=",
+            "scheduler_next_run_secs=",
+            "config_ok=",
+            "config_error=",
+        ];
+        for key in required_keys {
+            assert!(
+                out.contains(key),
+                "porcelain output must contain '{key}'; got:\n{out}"
+            );
+        }
+        // Specific values for happy-path conditions.
+        assert!(
+            out.contains("machine=eager-falcon"),
+            "machine key must have correct value; got: {out}"
+        );
+        assert!(
+            out.contains("config_ok=true"),
+            "config_ok must be true; got: {out}"
+        );
+        assert!(
+            out.contains("lock_state=free"),
+            "lock_state must be free; got: {out}"
+        );
+        assert!(
+            out.contains("pending_files=0"),
+            "pending_files must be 0; got: {out}"
+        );
+        assert!(
+            out.contains("last_sync_duration_ms=1300"),
+            "duration must match; got: {out}"
+        );
+    }
+
+    #[test]
+    fn status_error_path_missing_sessions_dir_porcelain() {
+        // Integration-style error-path: missing agent sessions_dir must produce
+        // config_ok=false in porcelain mode (spec §3.3, US-004 acceptance criteria).
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let repo_path = dir.path().join("repo");
+        let pi_sessions = dir.path().join("pi_sessions_missing"); // does NOT exist
+        let home = dir.path().to_path_buf();
+
+        write_full_status_config(&config_path, &repo_path, &pi_sessions, "error-machine");
+
+        let args = StatusArgs {
+            porcelain: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::<u8>::new();
+        status_write(&args, &config_path, &home, false, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(
+            out.contains("config_ok=false"),
+            "missing sessions dir must produce config_ok=false; got: {out}"
+        );
+        // config_error must be non-empty.
+        let config_err_line = out
+            .lines()
+            .find(|l| l.starts_with("config_error="))
+            .unwrap_or("");
+        assert!(
+            config_err_line.len() > "config_error=".len(),
+            "config_error must be non-empty; got: {out}"
+        );
+    }
+
+    #[test]
+    fn status_always_exits_ok_on_missing_config() {
+        // chronicle status must always return Ok(()) — even on config errors.
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("nonexistent.toml");
+        let home = dir.path().to_path_buf();
+
+        let args = StatusArgs::default();
+        let result = status_impl(&args, &config_path, &home);
+        assert!(
+            result.is_ok(),
+            "status_impl must return Ok even when config is missing; got: {result:?}"
+        );
     }
 }
