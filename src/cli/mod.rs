@@ -2284,10 +2284,8 @@ fn status_write<W: io::Write>(
 fn next_run_secs(interval_name: &str) -> Option<u64> {
     let interval_mins: u64 = if let Some(h) = interval_name.strip_suffix('h') {
         h.parse::<u64>().ok()?.saturating_mul(60)
-    } else if let Some(m) = interval_name.strip_suffix('m') {
-        m.parse::<u64>().ok()?
     } else {
-        return None;
+        interval_name.strip_suffix('m')?.parse::<u64>().ok()?
     };
     if interval_mins == 0 {
         return None;
