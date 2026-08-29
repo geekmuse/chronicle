@@ -62,7 +62,7 @@ impl TokenRegistry {
             .collect();
 
         // Most-specific (longest absolute path) first.
-        custom.sort_by(|(_, a), (_, b)| b.as_os_str().len().cmp(&a.as_os_str().len()));
+        custom.sort_by_key(|(_, path)| std::cmp::Reverse(path.as_os_str().len()));
 
         Self {
             home: home.to_owned(),
