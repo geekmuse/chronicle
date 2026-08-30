@@ -80,6 +80,45 @@ fn config(home_token: &str, custom_value: Option<String>, level: u8) -> Canonica
     }
 }
 
+fn replace_path_boundaries(text: &str, from: &str, to: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(position) = remaining.find(from) {
+        let after = &remaining[position + from.len()..];
+        result.push_str(&remaining[..position]);
+        if after.is_empty() || after.starts_with('/') {
+            result.push_str(to);
+        } else {
+            result.push_str(from);
+        }
+        remaining = after;
+    }
+    result.push_str(remaining);
+    result
+}
+
+fn expected_l3(text: &str, home: &str, home_token: &str, custom_value: Option<&str>) -> String {
+    let mut result = replace_path_boundaries(text, home, home_token);
+    if let Some(value) = custom_value {
+        let canonical_value = replace_path_boundaries(value, home, home_token);
+        result = replace_path_boundaries(&result, &canonical_value, "{{SYNC_PROJECTS}}");
+    }
+    result
+}
+
+fn expected_decanonicalized(
+    text: &str,
+    home: &str,
+    home_token: &str,
+    custom_value: Option<&str>,
+) -> String {
+    let result = custom_value.map_or_else(
+        || text.to_owned(),
+        |value| text.replace("{{SYNC_PROJECTS}}", value),
+    );
+    result.replace(home_token, home)
+}
+
 fuzz_target!(|input: CanonInput| {
     let username = safe_component(&input.username, "sender");
     let first = safe_component(&input.component_one, "project");
@@ -114,21 +153,21 @@ fuzz_target!(|input: CanonInput| {
         || format!("{home_a}/{subpath}"),
         |base| format!("{base}/{subpath}"),
     );
-    let path_b = custom_b.as_ref().map_or_else(
-        || format!("{home_b}/{subpath}"),
-        |base| format!("{base}/{subpath}"),
+    let registry_a = TokenRegistry::from_config(
+        &config(home_token, custom_a.clone(), level),
+        Path::new(&home_a),
+    );
+    let registry_b = TokenRegistry::from_config(
+        &config(home_token, custom_b.clone(), level),
+        Path::new(&home_b),
     );
 
-    let registry_a =
-        TokenRegistry::from_config(&config(home_token, custom_a, level), Path::new(&home_a));
-    let registry_b =
-        TokenRegistry::from_config(&config(home_token, custom_b, level), Path::new(&home_b));
-
+    let content = format!("{prefix} {path_a} {suffix}");
     let mut value = json!({
         "type": "message",
         "message": {},
         "arguments": {},
-        "content": format!("{prefix} {path_a} {suffix}"),
+        "content": content,
         "unlisted_path": path_a,
         "boundary": format!("{home_a}suffix"),
         "nested": {"items": [format!("{prefix}{path_a}"), {"path": path_a}]}
@@ -145,7 +184,9 @@ fuzz_target!(|input: CanonInput| {
         .pointer(pointer_for(input.field_selector))
         .and_then(Value::as_str)
         .expect("selected L2 field must remain a string");
-    let expected_selected = if input.custom_token {
+    let expected_selected = if level == 3 {
+        expected_l3(&path_a, &home_a, home_token, custom_a.as_deref())
+    } else if input.custom_token {
         format!("{{{{SYNC_PROJECTS}}}}/{subpath}")
     } else {
         format!("{home_token}/{subpath}")
@@ -166,16 +207,15 @@ fuzz_target!(|input: CanonInput| {
     if level == 2 {
         assert_eq!(unlisted, path_a, "L2 modified a non-whitelisted field");
     } else {
-        assert_ne!(unlisted, path_a, "L3 failed to scan an unlisted string");
-        assert!(
-            canonical_value["content"]
-                .as_str()
-                .is_some_and(|s| s.contains(if input.custom_token {
-                    "{{SYNC_PROJECTS}}"
-                } else {
-                    home_token
-                })),
-            "L3 failed to canonicalize freeform content"
+        assert_eq!(
+            unlisted,
+            expected_l3(&path_a, &home_a, home_token, custom_a.as_deref()),
+            "L3 produced an unexpected unlisted path"
+        );
+        assert_eq!(
+            canonical_value["content"].as_str(),
+            Some(expected_l3(&content, &home_a, home_token, custom_a.as_deref()).as_str()),
+            "L3 produced unexpected freeform content"
         );
     }
 
@@ -197,18 +237,27 @@ fuzz_target!(|input: CanonInput| {
         .expect("canonical JSON must de-canonicalize on another machine");
     let cross_value: Value =
         serde_json::from_str(&cross_machine).expect("cross-machine output must be JSON");
+    let expected_cross_path =
+        expected_decanonicalized(&expected_selected, &home_b, home_token, custom_b.as_deref());
     assert_eq!(
         cross_value
             .pointer(pointer_for(input.field_selector))
             .and_then(Value::as_str),
-        Some(path_b.as_str()),
+        Some(expected_cross_path.as_str()),
         "cross-machine path substitution failed"
     );
     if level == 3 {
-        assert!(
-            cross_value["content"]
-                .as_str()
-                .is_some_and(|s| s.contains(&path_b)),
+        let expected_canonical_content =
+            expected_l3(&content, &home_a, home_token, custom_a.as_deref());
+        let expected_cross_content = expected_decanonicalized(
+            &expected_canonical_content,
+            &home_b,
+            home_token,
+            custom_b.as_deref(),
+        );
+        assert_eq!(
+            cross_value["content"].as_str(),
+            Some(expected_cross_content.as_str()),
             "cross-machine L3 substitution failed"
         );
     }
