@@ -1,6 +1,6 @@
 ---
 date_created: 2026-04-03
-date_modified: 2026-04-03
+date_modified: 2026-08-29
 status: active
 audience: both
 cross_references:
@@ -9,6 +9,7 @@ cross_references:
   - src/canon/mod.rs
   - src/canon/levels.rs
   - src/canon/fields.rs
+  - docs/specs/010-fuzzing-hardening.md
 ---
 
 # Spec 003 — L3 Canonicalization Hardening
@@ -140,14 +141,11 @@ Seed corpus consists of:
 
 #### 3.2.3 CI Integration
 
-The fuzz target is **not** run on every CI push (it requires `cargo +nightly
-fuzz run` and is slow).  Instead:
-
-- The target must **compile** in CI (add a `cargo build` step for
-  `fuzz/fuzz_targets/fuzz_roundtrip.rs` using nightly).
-- A separate scheduled workflow (`fuzz.yml`) runs the target for 60 seconds on
-  a cron schedule (e.g., weekly).
-- Any crashes or panics are reported as workflow failures.
+The original delivery compiled the target on every CI push and ran a weekly
+60-second campaign. This baseline has been superseded by
+[Spec 010](010-fuzzing-hardening.md): every PR now executes all fuzz targets for
+a short smoke campaign, while daily 10-minute scheduled jobs persist their
+corpora and upload crash artifacts.
 
 ## 4. Dependencies
 
@@ -156,7 +154,7 @@ fuzz run` and is slow).  Instead:
 | `cargo-fuzz` | fuzz harness CLI | dev-only, not in `Cargo.toml` |
 | `libfuzzer-sys` | fuzz target runtime | `[dev-dependencies]` in `fuzz/Cargo.toml` |
 | `proptest` | already present | existing dep |
-| `arbitrary` | structured fuzzing input | `[dev-dependencies]` in `fuzz/Cargo.toml` |
+| `arbitrary` | structured fuzzing input | `[dependencies]` in `fuzz/Cargo.toml` |
 
 `cargo-fuzz` uses a separate workspace in `fuzz/`; the root `Cargo.toml` is
 not modified.
@@ -177,5 +175,5 @@ not modified.
 3. `cargo +nightly fuzz build fuzz_roundtrip` succeeds with no compile errors.
 4. Running `cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=10`
    locally produces no crashes or panics against the seed corpus.
-5. CI compiles the fuzz target without running it (build-only step in `ci.yml`).
-6. A scheduled `fuzz.yml` workflow is added that runs the target for 60 seconds.
+5. CI compiles and smoke-runs every fuzz target.
+6. Scheduled workflows run persistent daily campaigns as defined by Spec 010.

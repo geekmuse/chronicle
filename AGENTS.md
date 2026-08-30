@@ -57,7 +57,7 @@ chronicle/
 │   └── workflows/
 │       ├── ci.yml                   # GitHub Actions CI (build/lint/test/deny/fuzz-build)
 │       ├── release.yml              # GitHub Actions release (binary artefacts)
-│       └── fuzz.yml                 # Weekly scheduled fuzz run (60 s, nightly)
+│       └── fuzz.yml                 # Daily persistent fuzz matrix (10 min/target)
 ├── .forgejo/                        # Forgejo-specific CI (mirrors .github/workflows)
 │   └── workflows/
 │       ├── ci.yml
@@ -65,9 +65,11 @@ chronicle/
 │       └── fuzz.yml
 ├── fuzz/                            # cargo-fuzz sub-workspace
 │   ├── Cargo.toml
-│   ├── corpus/fuzz_roundtrip/          # Seed inputs for the fuzz target
+│   ├── corpus/                      # Per-target seed + evolving corpora
 │   └── fuzz_targets/
-│       └── fuzz_roundtrip.rs            # libFuzzer round-trip invariant target
+│       ├── fuzz_roundtrip.rs        # Raw canonicalization round-trip
+│       ├── fuzz_canon_structured.rs # Structured canonicalization semantics
+│       └── fuzz_merge.rs            # Structured JSONL merge invariants
 ├── docs/                            # Project documentation
 │   ├── 001-architecture.md          # System architecture and design
 │   ├── 002-development-guide.md     # Development workflow and tooling
@@ -76,7 +78,8 @@ chronicle/
 │   │   ├── 001-initial-delivery.md  # Full project specification (v1.0)
 │   │   ├── 002-status-improvements.md  # Rich status command (v0.6.0)
 │   │   ├── 003-l3-canonicalization-hardening.md  # Fuzz + proptest hardening (v0.7.0)
-│   │   └── 004-doctor-command.md    # chronicle doctor pre-flight health check (v0.8.0)
+│   │   ├── 004-doctor-command.md    # chronicle doctor pre-flight health check (v0.8.0)
+│   │   └── 010-fuzzing-hardening.md # Persistent multi-target fuzzing
 │   ├── adrs/                        # Architecture Decision Records
 │   │   └── 001-stale-lock-recovery.md # Stale lock recovery after sleep/suspend
 │   ├── references/                  # CLI reference, config reference
@@ -347,7 +350,10 @@ When investigating a tool, approach, or pattern:
 - [x] L3 canonicalization hardening (v0.7.0): expanded proptest generators (arb_home_path,
       arb_subpath with spaces/dots, content templates, deeply-nested JSON, array-of-strings);
       cargo-fuzz sub-workspace with fuzz_roundtrip libFuzzer target and seed corpus;
-      fuzz-build step in CI + weekly scheduled fuzz.yml (GitHub + Forgejo)
+      fuzz-build step in CI + scheduled fuzz.yml (GitHub + Forgejo)
+- [x] Persistent fuzzing hardening: structured canonicalization and merge targets; 15-second
+      per-target PR smoke runs; daily 10-minute ASan matrix; persistent corpus caches; crash and
+      corpus artifacts; pinned nightly/cargo-fuzz; per-input memory/time limits
 - [x] `chronicle doctor` command (v0.8.0): CheckState/CheckResult types in src/doctor/mod.rs;
       check_config, check_git (5 s TCP timeout, SSH-key skip for HTTPS), check_agents
       (JSONL file count), check_scheduler (cron + lock liveness); DoctorArgs CLI wiring;

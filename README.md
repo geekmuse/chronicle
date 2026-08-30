@@ -52,7 +52,7 @@ over alternatives.
 - **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
 - **Rich `status` command** — Human-friendly (✓/⚠/✗) and machine-readable (`--porcelain`) output covering last-sync time/duration/operation, pending-file count, lock state, scheduler health, and per-agent sessions-dir existence; `--verbose` expands file lists and effective config values
 - **`doctor` command** — Pre-flight health check across Config, Git, Agents, and Scheduler subsystems; plain-English remediation hints; `--porcelain` for scripting; exit codes 0/1/2 (pass/warn/error)
-- **Fuzz-tested canonicalization** — A `cargo-fuzz` / libFuzzer target (`fuzz/fuzz_targets/fuzz_roundtrip.rs`) verifies the L2/L3 round-trip invariant against arbitrary inputs; runs weekly in CI (`fuzz.yml`) for 60 seconds with zero-crash enforcement; `fuzz-build` step runs on every PR
+- **Persistent fuzz testing** — Three `cargo-fuzz` / libFuzzer targets cover raw and structured L2/L3 canonicalization plus grow-only JSONL merge invariants. Every PR runs a short ASan smoke campaign; daily 10-minute campaigns retain their evolving corpora and upload crash inputs.
 
 ---
 
@@ -434,8 +434,14 @@ cargo test
 # Run linter
 cargo clippy -- -D warnings
 
-# Run the libFuzzer fuzz target for 30 seconds (requires nightly)
-cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=30
+# List the libFuzzer targets (requires nightly + cargo-fuzz)
+cargo +nightly fuzz list
+
+# Run one target for 30 seconds
+cargo +nightly fuzz run fuzz_canon_structured -- \
+  -max_total_time=30 -timeout=10 -print_final_stats=1
+
+# Other targets: fuzz_roundtrip, fuzz_merge
 ```
 
 See [Development Guide](docs/002-development-guide.md) for full details.

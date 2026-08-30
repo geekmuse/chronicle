@@ -8,10 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Persistent multi-target fuzzing** — Added `fuzz_canon_structured` with independent
+  L2/L3 replacement, whitelist-isolation, boundary, idempotence, custom-token, and
+  cross-machine oracles; added `fuzz_merge` for JSONL union, uniqueness, malformed-line,
+  remote-wins, and idempotence invariants. Retained `fuzz_roundtrip` for raw-byte coverage.
+- **Fuzz corpus and crash retention** — Daily matrix jobs restore each target's evolving
+  corpus, cache successful discoveries, and upload both diagnostic corpora and crash inputs.
 
 ### Fixed
 
 ### Changed
+- **Fuzz CI depth and reliability** — Pull requests now execute every target for 15 seconds
+  instead of only compiling one target. Scheduled GitHub and Forgejo campaigns now run daily
+  for 10 minutes per target with pinned tooling and explicit time, memory, and input limits.
 
 ## [0.8.5] - 2026-04-05
 

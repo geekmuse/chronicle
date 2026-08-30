@@ -13,15 +13,25 @@ path = "fuzz_targets/fuzz_roundtrip.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "fuzz_canon_structured"
+path = "fuzz_targets/fuzz_canon_structured.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_merge"
+path = "fuzz_targets/fuzz_merge.rs"
+test = false
+doc = false
+
 [dependencies]
+arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
 serde_json = "1"
 
 [dependencies.chronicle]
 path = ".."
-
-[dev-dependencies]
-arbitrary = { version = "1", features = ["derive"] }
 
 [workspace]
 members = ["."]
