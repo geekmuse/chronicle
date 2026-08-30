@@ -102,13 +102,13 @@ fuzz_target!(|data: &[u8]| {
     // JSON objects produced by serde_json itself, which is what the production
     // pipeline always operates on.
 
-    let json_line_1 = serde_json::to_string(&json_value)
-        .expect("serialising a parsed Value must succeed");
+    let json_line_1 =
+        serde_json::to_string(&json_value).expect("serialising a parsed Value must succeed");
 
-    let json_value_2: serde_json::Value = serde_json::from_str(&json_line_1)
-        .expect("re-parsing serde_json output must succeed");
-    let json_line_2 = serde_json::to_string(&json_value_2)
-        .expect("re-serialising a parsed Value must succeed");
+    let json_value_2: serde_json::Value =
+        serde_json::from_str(&json_line_1).expect("re-parsing serde_json output must succeed");
+    let json_line_2 =
+        serde_json::to_string(&json_value_2).expect("re-serialising a parsed Value must succeed");
 
     // Skip non-idempotent inputs (typically float precision edge cases).
     if json_line_1 != json_line_2 {

@@ -2,25 +2,90 @@ name: Scheduled Fuzz
 
 on:
   schedule:
-    - cron: '0 2 * * 0'  # Every Sunday at 02:00 UTC
-  workflow_dispatch:      # Allow ad-hoc manual runs
+    - cron: '0 2 * * *'  # Daily at 02:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: scheduled-fuzz
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FUZZ_TOOLCHAIN: nightly-2026-08-22
+  CARGO_FUZZ_VERSION: 0.13.2
 
 jobs:
   fuzz:
-    name: Fuzz run (nightly)
+    name: Fuzz ${{ matrix.target }} (ASan)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_roundtrip
+          - fuzz_canon_structured
+          - fuzz_merge
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install pinned Rust nightly
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.FUZZ_TOOLCHAIN }}
 
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+      - name: Cache fuzz tooling + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-fuzz
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            fuzz/target/
+          key: fuzz-build-${{ runner.os }}-${{ env.FUZZ_TOOLCHAIN }}-${{ env.CARGO_FUZZ_VERSION }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+          restore-keys: |
+            fuzz-build-${{ runner.os }}-${{ env.FUZZ_TOOLCHAIN }}-${{ env.CARGO_FUZZ_VERSION }}-
 
-      - name: Fuzz run (60 s)
-        run: cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=60
+      - name: Install pinned cargo-fuzz
+        shell: bash
+        run: |
+          if ! cargo fuzz --version 2>/dev/null | grep -q "cargo-fuzz $CARGO_FUZZ_VERSION"; then
+            cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+          fi
+
+      - name: Restore evolving corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Fuzz for 10 minutes
+        run: >-
+          cargo +${FUZZ_TOOLCHAIN} fuzz run ${{ matrix.target }} --
+          -max_total_time=600
+          -max_len=65536
+          -timeout=10
+          -rss_limit_mb=2048
+          -print_final_stats=1
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload evolved corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fuzz/corpus/${{ matrix.target }}/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,11 +1,12 @@
 ---
 date_created: 2026-03-29
-date_modified: 2026-03-30
+date_modified: 2026-08-29
 status: active
 audience: both
 cross_references:
   - docs/001-architecture.md
   - docs/003-documentation-standards.md
+  - docs/specs/010-fuzzing-hardening.md
   - CLAUDE.md
 ---
 
@@ -146,6 +147,7 @@ chronicle/
 | Unit tests | `#[test]` / `#[cfg(test)]` | `mod tests` at bottom of source files |
 | Integration tests | `#[test]` | `tests/` directory |
 | Property tests | `proptest` | Alongside unit tests |
+| Fuzz targets | `cargo-fuzz` / libFuzzer | `fuzz/fuzz_targets/` |
 
 ### Writing Tests
 
@@ -154,6 +156,9 @@ chronicle/
 - Use `proptest` for merge commutativity/associativity/idempotency and canonicalization round-trips
 - Name tests descriptively: `test_canon_roundtrip_with_custom_tokens`
 - Use `assert_eq!` with clear left/right labels
+- Build all fuzz targets with `cargo +nightly fuzz build`
+- Smoke-run a target with `cargo +nightly fuzz run <target> -- -max_total_time=30 -timeout=10`
+- Minimize and commit every discovered crash alongside a deterministic regression test
 
 ## Code Quality Tools
 
