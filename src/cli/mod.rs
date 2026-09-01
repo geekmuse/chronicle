@@ -1516,7 +1516,11 @@ fn integrate_remote_changes(manager: &git::RepoManager, machine_name: &str) -> R
     }
 
     let changed = staged_paths.len();
-    if !staged_paths.is_empty() {
+    // A remote commit can differ only in metadata or contain JSONL content
+    // already present locally. It must still become a parent of local HEAD;
+    // otherwise the next push is rejected as non-fast-forward.
+    let needs_history_merge = remote_tip_is_not_ancestor(repo, remote_commit_oid)?;
+    if !staged_paths.is_empty() || needs_history_merge {
         let staged_refs: Vec<&Path> = staged_paths.iter().map(|p| p.as_path()).collect();
         manager
             .stage_files(&staged_refs)
@@ -1529,10 +1533,10 @@ fn integrate_remote_changes(manager: &git::RepoManager, machine_name: &str) -> R
             changed
         );
 
-        // Create a MERGE commit that grafts the remote history onto the local
-        // branch.  Using [local_head, remote_commit] as parents means the new
+        // Create a merge commit that grafts the remote history onto the local
+        // branch. Using [local_head, remote_commit] as parents means the new
         // commit is a descendant of the remote tip, so the subsequent push is
-        // a fast-forward and never gets rejected as non-fast-forward.
+        // a fast-forward even when no JSONL artifact needed an update.
         let mut index = repo
             .index()
             .context("failed to open git index for merge commit")?;
@@ -1579,6 +1583,36 @@ fn integrate_remote_changes(manager: &git::RepoManager, machine_name: &str) -> R
     }
 
     Ok(changed)
+}
+
+/// Return whether `remote_tip` is absent from the current local history.
+///
+/// A content-level JSONL merge alone does not establish Git ancestry. When
+/// the remote commit only changes ignored metadata or already-matching JSONL
+/// content, callers still need a merge commit before pushing.
+fn remote_tip_is_not_ancestor(repo: &git2::Repository, remote_tip: git2::Oid) -> Result<bool> {
+    let local_head = match repo.head() {
+        Ok(head) => head
+            .peel_to_commit()
+            .context("failed to peel local HEAD while checking remote ancestry")?,
+        Err(error)
+            if error.code() == git2::ErrorCode::UnbornBranch
+                || error.code() == git2::ErrorCode::NotFound =>
+        {
+            return Ok(false);
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "HEAD error while checking remote ancestry: {error}"
+            ))
+        }
+    };
+    if local_head.id() == remote_tip {
+        return Ok(false);
+    }
+    Ok(!repo
+        .graph_descendant_of(local_head.id(), remote_tip)
+        .context("failed to compare local and remote history")?)
 }
 
 /// Controls how many session files are materialized per directory during a
@@ -4069,6 +4103,24 @@ mod tests {
             "materialize must be skipped when integrated == 0; \
              found files in {local_dir:?}"
         );
+    }
+
+    #[test]
+    fn remote_tip_without_shared_history_requires_a_merge_commit() {
+        let directory = TempDir::new().unwrap();
+        let repository = git2::Repository::init(directory.path()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_oid = repository.treebuilder(None).unwrap().write().unwrap();
+        let tree = repository.find_tree(tree_oid).unwrap();
+        let local_tip = repository
+            .commit(Some("HEAD"), &signature, &signature, "local", &tree, &[])
+            .unwrap();
+        let remote_tip = repository
+            .commit(None, &signature, &signature, "remote", &tree, &[])
+            .unwrap();
+
+        assert!(!remote_tip_is_not_ancestor(&repository, local_tip).unwrap());
+        assert!(remote_tip_is_not_ancestor(&repository, remote_tip).unwrap());
     }
 
     #[cfg(unix)]
