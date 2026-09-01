@@ -185,14 +185,15 @@ pub fn filter_marker_lines(lines: &[String]) -> Vec<String> {
 /// from within a cron job (which runs in a minimal environment).
 ///
 /// - **macOS:** Discovers the launchd-managed SSH agent socket by scanning
-///   `/private/tmp/com.apple.launchd.*/Listeners` for a socket owned by the
-///   current user.  Neither `launchctl getenv` nor `launchctl asuser` work
+///   both `/var/run/com.apple.launchd.*/Listeners` and the legacy
+///   `/private/tmp/com.apple.launchd.*/Listeners` location for a socket owned
+///   by the current user. Neither `launchctl getenv` nor `launchctl asuser` work
 ///   from cron because cron runs in the system bootstrap domain, which cannot
 ///   query the user's GUI session domain.
 /// - **Linux:** Falls back to the well-known systemd user socket at
 ///   `/run/user/<uid>/ssh-agent.socket` when `SSH_AUTH_SOCK` is unset.
 #[cfg(target_os = "macos")]
-const SSH_AGENT_ENV: &str = "SSH_AUTH_SOCK=$(find /private/tmp/com.apple.launchd.* -name Listeners -user $(whoami) -type s 2>/dev/null | head -1) ";
+const SSH_AGENT_ENV: &str = "SSH_AUTH_SOCK=$(find /var/run/com.apple.launchd.* /private/tmp/com.apple.launchd.* -name Listeners -user $(id -un) -type s 2>/dev/null | head -1) ";
 
 #[cfg(not(target_os = "macos"))]
 const SSH_AGENT_ENV: &str =
@@ -577,6 +578,16 @@ mod tests {
             entries[1].contains("SSH_AUTH_SOCK"),
             "interval entry must propagate SSH_AUTH_SOCK"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_entries_search_current_and_legacy_launchd_socket_paths() {
+        let entries = build_entries("/usr/local/bin/chronicle", "*/5 * * * *");
+        for entry in entries {
+            assert!(entry.contains("/var/run/com.apple.launchd.*"));
+            assert!(entry.contains("/private/tmp/com.apple.launchd.*"));
+        }
     }
 
     // ── apply_install ───────────────────────────────────────────────────────

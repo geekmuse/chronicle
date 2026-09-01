@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-01
+
+### Fixed
+- **macOS cron SSH authentication** — Scheduled syncs now discover launchd
+  agent sockets from the current `/var/run/com.apple.launchd.*` runtime path
+  as well as the legacy `/private/tmp/com.apple.launchd.*` path. This restores
+  SSH-agent authentication for background fetches and pushes. Sync also grafts
+  a fetched remote tip into local history when JSONL content already matches,
+  preventing a non-fast-forward rejection after an authentication outage.
+
 ## [0.9.0] - 2026-09-01
 
 ### Added

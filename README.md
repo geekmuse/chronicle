@@ -42,7 +42,7 @@ CRDT (set-union), preserving the append-only invariant of JSONL session data. Se
 [Storage Backends](docs/references/002-storage-backends.md) for why Git was chosen
 over alternatives.
 
-**Current release:** 0.9.0 (`chronicle --version`)
+**Current release:** 0.9.1 (`chronicle --version`)
 
 ## Features
 
@@ -367,8 +367,9 @@ anything special. However, if `chronicle status` shows auth errors after install
 the schedule:
 
 - **macOS:** Make sure your key is added to Keychain (`ssh-add --apple-use-keychain`).
-  The cron entry uses a `find`-based socket discovery trick that locates the
-  Keychain agent socket even in the stripped cron environment.
+  The cron entry searches both current `/var/run/com.apple.launchd.*` and legacy
+  `/private/tmp/com.apple.launchd.*` runtime locations for the Keychain agent
+  socket in the stripped cron environment.
 - **Linux:** The cron entry falls back to the systemd user SSH agent socket
   (`/run/user/$(id -u)/ssh-agent.socket`). Ensure your SSH key is loaded there.
 
