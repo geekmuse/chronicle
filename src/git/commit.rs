@@ -3,6 +3,7 @@
 // US-012: stage files via git2 index, format sync and import commit messages,
 // and commit staged changes with the canonical Chronicle committer identity.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -21,16 +22,70 @@ const COMMITTER_EMAIL: &str = "chronicle@local";
 // ---------------------------------------------------------------------------
 
 /// Statistics used to build the body of a sync commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Per-agent counts are stored in a [`BTreeMap`] so formatting remains stable
+/// as adapters are added. The Pi and Claude accessors preserve the legacy
+/// two-agent view for callers that still need it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSummary {
     /// Files that did not previously exist in the repo.
     pub new_files: usize,
     /// Files that already existed but have been appended to.
     pub modified_files: usize,
-    /// Total changed files attributed to the pi agent.
+    agent_totals: BTreeMap<crate::adapters::AgentId, usize>,
+    /// Legacy Pi total retained while CLI callers migrate to [`AgentId`](crate::adapters::AgentId).
     pub pi_total: usize,
-    /// Total changed files attributed to the claude agent.
+    /// Legacy Claude total retained while CLI callers migrate to [`AgentId`](crate::adapters::AgentId).
     pub claude_total: usize,
+}
+
+impl SyncSummary {
+    /// Create a summary with no per-agent changes.
+    #[must_use]
+    pub fn new(new_files: usize, modified_files: usize) -> Self {
+        Self {
+            new_files,
+            modified_files,
+            agent_totals: BTreeMap::new(),
+            pi_total: 0,
+            claude_total: 0,
+        }
+    }
+
+    /// Record a changed-file total for an agent.
+    #[must_use]
+    pub fn with_agent_total(mut self, agent: crate::adapters::AgentId, total: usize) -> Self {
+        self.agent_totals.insert(agent, total);
+        match agent {
+            crate::adapters::AgentId::Pi => self.pi_total = total,
+            crate::adapters::AgentId::Claude => self.claude_total = total,
+        }
+        self
+    }
+
+    /// Return an agent's changed-file total, or zero when it is absent.
+    #[must_use]
+    pub fn agent_total(&self, agent: crate::adapters::AgentId) -> usize {
+        self.agent_totals
+            .get(&agent)
+            .copied()
+            .unwrap_or(match agent {
+                crate::adapters::AgentId::Pi => self.pi_total,
+                crate::adapters::AgentId::Claude => self.claude_total,
+            })
+    }
+
+    /// Return the Pi changed-file total for compatibility with prior callers.
+    #[must_use]
+    pub fn pi_total(&self) -> usize {
+        self.agent_total(crate::adapters::AgentId::Pi)
+    }
+
+    /// Return the Claude changed-file total for compatibility with prior callers.
+    #[must_use]
+    pub fn claude_total(&self) -> usize {
+        self.agent_total(crate::adapters::AgentId::Claude)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +114,10 @@ pub fn format_sync_message(
     );
     let body = format!(
         "+{} files, ~{} files (pi: {}, claude: {})",
-        summary.new_files, summary.modified_files, summary.pi_total, summary.claude_total
+        summary.new_files,
+        summary.modified_files,
+        summary.pi_total(),
+        summary.claude_total()
     );
     format!("{subject}\n\n{body}\n")
 }
@@ -193,6 +251,17 @@ mod tests {
         RepoManager::init_or_open(&path, None, "main").expect("init repo")
     }
 
+    fn summary(
+        new_files: usize,
+        modified_files: usize,
+        pi_total: usize,
+        claude_total: usize,
+    ) -> SyncSummary {
+        SyncSummary::new(new_files, modified_files)
+            .with_agent_total(crate::adapters::AgentId::Pi, pi_total)
+            .with_agent_total(crate::adapters::AgentId::Claude, claude_total)
+    }
+
     // -----------------------------------------------------------------------
     // format_sync_message
     // -----------------------------------------------------------------------
@@ -201,12 +270,7 @@ mod tests {
     fn sync_message_subject_format() {
         use chrono::TimeZone as _;
         let ts = Utc.with_ymd_and_hms(2026, 3, 28, 15, 30, 0).unwrap();
-        let summary = SyncSummary {
-            new_files: 3,
-            modified_files: 12,
-            pi_total: 8,
-            claude_total: 7,
-        };
+        let summary = summary(3, 12, 8, 7);
         let msg = format_sync_message("cheerful-chinchilla", &ts, &summary);
         assert!(
             msg.starts_with("sync: cheerful-chinchilla @ 2026-03-28T15:30:00Z"),
@@ -218,12 +282,7 @@ mod tests {
     fn sync_message_body_format() {
         use chrono::TimeZone as _;
         let ts = Utc.with_ymd_and_hms(2026, 3, 28, 15, 30, 0).unwrap();
-        let summary = SyncSummary {
-            new_files: 3,
-            modified_files: 12,
-            pi_total: 8,
-            claude_total: 7,
-        };
+        let summary = summary(3, 12, 8, 7);
         let msg = format_sync_message("cheerful-chinchilla", &ts, &summary);
         assert!(
             msg.contains("+3 files, ~12 files (pi: 8, claude: 7)"),
@@ -235,12 +294,7 @@ mod tests {
     fn sync_message_blank_line_between_subject_and_body() {
         use chrono::TimeZone as _;
         let ts = Utc.with_ymd_and_hms(2026, 3, 28, 15, 30, 0).unwrap();
-        let summary = SyncSummary {
-            new_files: 0,
-            modified_files: 0,
-            pi_total: 0,
-            claude_total: 0,
-        };
+        let summary = summary(0, 0, 0, 0);
         let msg = format_sync_message("m", &ts, &summary);
         let lines: Vec<&str> = msg.lines().collect();
         // line 0 = subject, line 1 = blank, line 2 = body
@@ -255,14 +309,21 @@ mod tests {
     fn sync_message_zero_counts() {
         use chrono::TimeZone as _;
         let ts = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-        let summary = SyncSummary {
-            new_files: 0,
-            modified_files: 0,
-            pi_total: 0,
-            claude_total: 0,
-        };
+        let summary = summary(0, 0, 0, 0);
         let msg = format_sync_message("bold-barracuda", &ts, &summary);
         assert!(msg.contains("+0 files, ~0 files (pi: 0, claude: 0)"));
+    }
+
+    #[test]
+    fn sync_summary_uses_agent_id_keyed_totals() {
+        let summary = SyncSummary::new(2, 3)
+            .with_agent_total(crate::adapters::AgentId::Claude, 7)
+            .with_agent_total(crate::adapters::AgentId::Pi, 5);
+
+        assert_eq!(summary.agent_total(crate::adapters::AgentId::Pi), 5);
+        assert_eq!(summary.agent_total(crate::adapters::AgentId::Claude), 7);
+        assert_eq!(summary.pi_total(), 5);
+        assert_eq!(summary.claude_total(), 7);
     }
 
     // -----------------------------------------------------------------------
@@ -443,12 +504,7 @@ mod tests {
         let repo_path = manager.repo_path().to_path_buf();
 
         let ts = Utc.with_ymd_and_hms(2026, 3, 28, 15, 30, 0).unwrap();
-        let summary = SyncSummary {
-            new_files: 1,
-            modified_files: 0,
-            pi_total: 1,
-            claude_total: 0,
-        };
+        let summary = summary(1, 0, 1, 0);
         let msg = format_sync_message("happy-hedgehog", &ts, &summary);
 
         fs::write(repo_path.join("e.jsonl"), b"content\n").unwrap();

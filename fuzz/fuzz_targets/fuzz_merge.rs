@@ -25,6 +25,8 @@ struct MergeInput {
     local: Vec<EntryInput>,
     remote_noise: Vec<String>,
     local_noise: Vec<String>,
+    /// Selects Pi/Claude canonical repository roots for merge diagnostics.
+    adapter_paths: u8,
 }
 
 fn safe_payload(raw: &str) -> String {
@@ -89,8 +91,17 @@ fn key_set(content: &str) -> HashSet<EntryKey> {
 fuzz_target!(|input: MergeInput| {
     let remote = build_file(&input.remote, &input.remote_noise);
     let local = build_file(&input.local, &input.local_noise);
-    let remote_path = Path::new("remote.jsonl");
-    let local_path = Path::new("local.jsonl");
+    let (remote_path, local_path) = if input.adapter_paths.is_multiple_of(2) {
+        (
+            Path::new("pi/sessions/--SYNC_HOME-Dev-app--/remote.jsonl"),
+            Path::new("claude/projects/-SYNC_HOME-Dev-app/local.jsonl"),
+        )
+    } else {
+        (
+            Path::new("claude/projects/-SYNC_HOME-Dev-app/remote.jsonl"),
+            Path::new("pi/sessions/--SYNC_HOME-Dev-app--/local.jsonl"),
+        )
+    };
 
     let output = merge_jsonl(&remote, remote_path, &local, local_path, &NullReporter);
 

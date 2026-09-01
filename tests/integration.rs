@@ -73,6 +73,51 @@ fn create_pi_session_file(
     path
 }
 
+/// Return the Claude-encoded directory name for `{home}/{project_suffix}`.
+fn claude_dir_name(home: &Path, project_suffix: &str) -> String {
+    let home_str = home.to_str().unwrap().trim_start_matches('/');
+    format!("-{home_str}/{project_suffix}").replace(['/', '.'], "-")
+}
+
+/// Create a Claude session subdirectory and write one `.jsonl` file into it.
+fn create_claude_session_file(
+    claude_sessions: &Path,
+    home: &Path,
+    project_suffix: &str,
+    filename: &str,
+    content: &str,
+) -> PathBuf {
+    let dir = claude_sessions.join(claude_dir_name(home, project_suffix));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(filename);
+    fs::write(&path, content.as_bytes()).unwrap();
+    path
+}
+
+/// Write a config with both built-in adapters enabled.
+fn write_dual_agent_config(
+    config_path: &Path,
+    repo_path: &Path,
+    remote_path: &Path,
+    pi_sessions: &Path,
+    claude_sessions: &Path,
+    machine_name: &str,
+) {
+    let toml = format!(
+        "[general]\nmachine_name = \"{machine_name}\"\nsync_jitter_secs = -1\n\n\
+         [storage]\nrepo_path = \"{}\"\nremote_url = \"{}\"\n\n\
+         [agents.pi]\nenabled = true\nsession_dir = \"{}\"\n\n\
+         [agents.claude]\nenabled = true\nsession_dir = \"{}\"\n\n\
+         [sync]\nhistory_mode = \"full\"\npartial_max_count = 100\n",
+        repo_path.display(),
+        remote_path.display(),
+        pi_sessions.display(),
+        claude_sessions.display(),
+    );
+    fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    fs::write(config_path, toml).unwrap();
+}
+
 /// Generate a Pi-format session filename for a given sequential index.
 ///
 /// Format: `YYYY-MM-DDTHH-MM-SS-mmmZ_NNNN.jsonl`
@@ -213,6 +258,63 @@ fn two_machine_basic_sync() {
         fs::read_dir(&pi_b)
             .map(|rd| rd.map(|e| e.unwrap().file_name()).collect::<Vec<_>>())
             .unwrap_or_default()
+    );
+}
+
+// ===========================================================================
+// Adapter parity: both built-in adapters use the same sync lifecycle.
+// ===========================================================================
+#[test]
+fn two_machine_sync_materializes_pi_and_claude_sessions() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    let home_a = d.join("home_a");
+    let home_b = d.join("home_b");
+    let pi_a = d.join("pi_a");
+    let pi_b = d.join("pi_b");
+    let claude_a = d.join("claude_a");
+    let claude_b = d.join("claude_b");
+    let repo_a = d.join("repo_a");
+    let repo_b = d.join("repo_b");
+    let remote = d.join("remote");
+    let cfg_a = d.join("cfg_a.toml");
+    let cfg_b = d.join("cfg_b.toml");
+    fs::create_dir_all(&home_a).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+    git2::Repository::init_bare(&remote).unwrap();
+
+    create_pi_session_file(
+        &pi_a,
+        &home_a,
+        "Dev/pi-project",
+        "pi.jsonl",
+        "{\"type\":\"session\",\"id\":\"pi-session\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
+    );
+    create_claude_session_file(
+        &claude_a,
+        &home_a,
+        "Dev/claude-project",
+        "claude.jsonl",
+        "{\"type\":\"session\",\"id\":\"claude-session\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
+    );
+    write_dual_agent_config(&cfg_a, &repo_a, &remote, &pi_a, &claude_a, "machine-a");
+    write_dual_agent_config(&cfg_b, &repo_b, &remote, &pi_b, &claude_b, "machine-b");
+
+    sync_impl(false, true, &cfg_a, &home_a).unwrap();
+    sync_impl(false, true, &cfg_b, &home_b).unwrap();
+
+    assert!(pi_session_file_exists(
+        &pi_b,
+        &home_b,
+        "Dev/pi-project",
+        "pi.jsonl"
+    ));
+    assert!(
+        claude_b
+            .join(claude_dir_name(&home_b, "Dev/claude-project"))
+            .join("claude.jsonl")
+            .exists(),
+        "Claude session must materialize with machine B's Claude directory codec"
     );
 }
 

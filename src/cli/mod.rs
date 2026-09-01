@@ -1,11 +1,12 @@
 use anyhow::{Context as _, Result};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
+use crate::adapters::{AdapterRegistry, AgentAdapter, AgentId};
 use crate::canon::levels::L3_WARNING;
 use crate::canon::TokenRegistry;
 use crate::config::{self, schema::HistoryMode, CliOverrides};
@@ -133,6 +134,7 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
     }
 
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
+    let adapters = AdapterRegistry::with_defaults();
     let canon_level = cfg.canonicalization.level;
     let machine_name = {
         let n = cfg.general.machine_name.clone();
@@ -163,42 +165,26 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
     let mut total_sessions = 0usize;
     let mut total_files = 0usize;
 
-    if (agent == "pi" || agent == "all") && cfg.agents.pi.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
-        let (s, f) = import_agent_sessions(&ImportParams {
-            agent_name: "pi",
-            source_dir: &source_dir,
-            repo_rel_base: "pi/sessions",
+    for context in adapters.contexts(&cfg.agents, home) {
+        if !context.enabled || (agent != "all" && agent != context.metadata.id.as_str()) {
+            continue;
+        }
+        let adapter = adapters
+            .get(context.metadata.id)
+            .expect("context is produced by a registered adapter");
+        let (sessions, files) = import_agent_sessions(&ImportParams {
+            adapter,
+            source_dir: &context.session_dir,
             repo_path: &repo_path,
             registry: &registry,
             canon_level,
             manager,
             machine_name: &machine_name,
             dry_run,
-            is_pi: true,
         })
-        .context("Pi import failed")?;
-        total_sessions += s;
-        total_files += f;
-    }
-
-    if (agent == "claude" || agent == "all") && cfg.agents.claude.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
-        let (s, f) = import_agent_sessions(&ImportParams {
-            agent_name: "claude",
-            source_dir: &source_dir,
-            repo_rel_base: "claude/projects",
-            repo_path: &repo_path,
-            registry: &registry,
-            canon_level,
-            manager,
-            machine_name: &machine_name,
-            dry_run,
-            is_pi: false,
-        })
-        .context("Claude import failed")?;
-        total_sessions += s;
-        total_files += f;
+        .with_context(|| format!("{} import failed", context.metadata.display_name))?;
+        total_sessions += sessions;
+        total_files += files;
     }
 
     if dry_run {
@@ -220,9 +206,8 @@ pub fn import_impl(agent: &str, dry_run: bool, config_path: &Path, home: &Path) 
 /// Returns `(sessions_committed, files_written)`.
 /// Parameters bundled to avoid a >7-argument function (clippy::too_many_arguments).
 struct ImportParams<'a> {
-    agent_name: &'a str,
+    adapter: &'a dyn AgentAdapter,
     source_dir: &'a Path,
-    repo_rel_base: &'a str,
     repo_path: &'a Path,
     registry: &'a TokenRegistry,
     canon_level: u8,
@@ -230,23 +215,23 @@ struct ImportParams<'a> {
     manager: Option<&'a git::RepoManager>,
     machine_name: &'a str,
     dry_run: bool,
-    is_pi: bool,
 }
 
 fn import_agent_sessions(p: &ImportParams<'_>) -> Result<(usize, usize)> {
     let ImportParams {
-        agent_name,
+        adapter,
         source_dir,
-        repo_rel_base,
         repo_path,
         registry,
         canon_level,
         manager,
         machine_name,
         dry_run,
-        is_pi,
     } = p;
-    let (dry_run, is_pi, canon_level) = (*dry_run, *is_pi, *canon_level);
+    let (dry_run, canon_level) = (*dry_run, *canon_level);
+    let metadata = adapter.metadata();
+    let agent_name = metadata.id.as_str();
+    let repo_rel_base = metadata.repo_rel_base;
 
     if !source_dir.exists() {
         println!(
@@ -283,11 +268,7 @@ fn import_agent_sessions(p: &ImportParams<'_>) -> Result<(usize, usize)> {
             .into_owned();
 
         // L1: canonicalize the encoded directory name.
-        let canonical_dir = if is_pi {
-            registry.canonicalize_pi_dir(&dir_name_os)
-        } else {
-            registry.canonicalize_claude_dir(&dir_name_os)
-        };
+        let canonical_dir = adapter.canonicalize_dir(registry, &dir_name_os);
 
         // Collect all .jsonl files inside this session subdirectory.
         let mut jsonl_files: Vec<PathBuf> = Vec::new();
@@ -658,6 +639,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     }
 
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
+    let adapters = AdapterRegistry::with_defaults();
     let canon_level = cfg.canonicalization.level;
     let machine_name = non_empty_machine_name(&cfg.general.machine_name);
     let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
@@ -693,55 +675,8 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     // -----------------------------------------------------------------------
     // Collect outgoing changes across enabled agents.
     // -----------------------------------------------------------------------
-    let mut changed: Vec<ScannedChange> = Vec::new();
+    let changed = collect_scanned_changes(&adapters, &cfg, home, &state_cache, follow_symlinks);
 
-    if cfg.agents.pi.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
-        if source_dir.exists() {
-            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                Ok(entries) => {
-                    for e in entries
-                        .into_iter()
-                        .filter(|e| e.kind != scan::ChangeKind::Unchanged)
-                    {
-                        changed.push(ScannedChange {
-                            entry: e,
-                            source_dir: source_dir.clone(),
-                            repo_rel_base: "pi/sessions",
-                            is_pi: true,
-                        });
-                    }
-                }
-                Err(e) => eprintln!("  Warning: failed to scan Pi sessions: {e}"),
-            }
-        }
-    }
-
-    if cfg.agents.claude.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
-        if source_dir.exists() {
-            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                Ok(entries) => {
-                    for e in entries
-                        .into_iter()
-                        .filter(|e| e.kind != scan::ChangeKind::Unchanged)
-                    {
-                        changed.push(ScannedChange {
-                            entry: e,
-                            source_dir: source_dir.clone(),
-                            repo_rel_base: "claude/projects",
-                            is_pi: false,
-                        });
-                    }
-                }
-                Err(e) => eprintln!("  Warning: failed to scan Claude sessions: {e}"),
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Dry-run: describe all phases without writing.
-    // -----------------------------------------------------------------------
     if dry_run {
         let new_count = changed
             .iter()
@@ -764,8 +699,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
     let manager = git::RepoManager::init_or_open(&repo_path, remote_url, &cfg.storage.branch)
         .context("failed to open git repository")?;
 
-    let mut pi_staged: Vec<PathBuf> = Vec::new();
-    let mut claude_staged: Vec<PathBuf> = Vec::new();
+    let mut staged_by_agent: BTreeMap<AgentId, Vec<PathBuf>> = BTreeMap::new();
     let mut total_new = 0usize;
     let mut total_modified = 0usize;
     let mut cache_updates: Vec<(String, scan::FileState)> = Vec::new();
@@ -775,11 +709,12 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
         match process_push_file(&PushFileParams {
             entry: &c.entry,
             source_dir: &c.source_dir,
-            repo_rel_base: c.repo_rel_base,
+            adapter: adapters
+                .get(c.agent)
+                .expect("scanned change has a registered adapter"),
             repo_path: &repo_path,
             registry: &registry,
             canon_level,
-            is_pi: c.is_pi,
         }) {
             Ok(Some(pushed)) => {
                 // Always cache — prevents re-scanning on the next run.
@@ -790,11 +725,10 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
                     } else {
                         total_modified += 1;
                     }
-                    if c.is_pi {
-                        pi_staged.push(pushed.staged_rel);
-                    } else {
-                        claude_staged.push(pushed.staged_rel);
-                    }
+                    staged_by_agent
+                        .entry(c.agent)
+                        .or_default()
+                        .push(pushed.staged_rel);
                 }
             }
             Ok(None) => {}
@@ -802,9 +736,7 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
         }
     }
 
-    let pi_total = pi_staged.len();
-    let claude_total = claude_staged.len();
-    let all_staged: Vec<PathBuf> = pi_staged.into_iter().chain(claude_staged).collect();
+    let all_staged: Vec<PathBuf> = staged_by_agent.values().flatten().cloned().collect();
     let outgoing_count = all_staged.len();
 
     let now = Utc::now();
@@ -829,12 +761,10 @@ pub fn sync_impl(dry_run: bool, quiet: bool, config_path: &Path, home: &Path) ->
             .stage_files(&[manifest_rel.as_path()])
             .context("failed to stage manifest")?;
 
-        let summary = git::SyncSummary {
-            new_files: total_new,
-            modified_files: total_modified,
-            pi_total,
-            claude_total,
-        };
+        let mut summary = git::SyncSummary::new(total_new, total_modified);
+        for (agent, staged) in &staged_by_agent {
+            summary = summary.with_agent_total(*agent, staged.len());
+        }
         let msg = git::format_sync_message(&machine_name, &now, &summary);
         manager
             .commit_if_staged(&msg, &machine_name)
@@ -1018,6 +948,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     }
 
     let registry = TokenRegistry::from_config(&cfg.canonicalization, home);
+    let adapters = AdapterRegistry::with_defaults();
     let canon_level = cfg.canonicalization.level;
     let machine_name = non_empty_machine_name(&cfg.general.machine_name);
     let repo_path = config::expand_path_with_home(&cfg.storage.repo_path, home);
@@ -1045,51 +976,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         scan::StateCache::load(&cache_path).context("failed to load state cache")?;
 
     // Collect all changed files across enabled agents.
-    let mut changed: Vec<ScannedChange> = Vec::new();
-
-    if cfg.agents.pi.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
-        if source_dir.exists() {
-            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                Ok(entries) => {
-                    for e in entries
-                        .into_iter()
-                        .filter(|e| e.kind != scan::ChangeKind::Unchanged)
-                    {
-                        changed.push(ScannedChange {
-                            entry: e,
-                            source_dir: source_dir.clone(),
-                            repo_rel_base: "pi/sessions",
-                            is_pi: true,
-                        });
-                    }
-                }
-                Err(e) => eprintln!("  Warning: failed to scan Pi sessions: {e}"),
-            }
-        }
-    }
-
-    if cfg.agents.claude.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
-        if source_dir.exists() {
-            match scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                Ok(entries) => {
-                    for e in entries
-                        .into_iter()
-                        .filter(|e| e.kind != scan::ChangeKind::Unchanged)
-                    {
-                        changed.push(ScannedChange {
-                            entry: e,
-                            source_dir: source_dir.clone(),
-                            repo_rel_base: "claude/projects",
-                            is_pi: false,
-                        });
-                    }
-                }
-                Err(e) => eprintln!("  Warning: failed to scan Claude sessions: {e}"),
-            }
-        }
-    }
+    let changed = collect_scanned_changes(&adapters, &cfg, home, &state_cache, follow_symlinks);
 
     if dry_run {
         let new_count = changed
@@ -1112,8 +999,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
     let manager = git::RepoManager::init_or_open(&repo_path, remote_url, &cfg.storage.branch)
         .context("failed to open git repository")?;
 
-    let mut pi_staged: Vec<PathBuf> = Vec::new();
-    let mut claude_staged: Vec<PathBuf> = Vec::new();
+    let mut staged_by_agent: BTreeMap<AgentId, Vec<PathBuf>> = BTreeMap::new();
     let mut total_new = 0usize;
     let mut total_modified = 0usize;
     let mut cache_updates: Vec<(String, scan::FileState)> = Vec::new();
@@ -1123,11 +1009,12 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         match process_push_file(&PushFileParams {
             entry: &c.entry,
             source_dir: &c.source_dir,
-            repo_rel_base: c.repo_rel_base,
+            adapter: adapters
+                .get(c.agent)
+                .expect("scanned change has a registered adapter"),
             repo_path: &repo_path,
             registry: &registry,
             canon_level,
-            is_pi: c.is_pi,
         }) {
             Ok(Some(pushed)) => {
                 // Always cache — prevents re-scanning on the next run.
@@ -1138,11 +1025,10 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
                     } else {
                         total_modified += 1;
                     }
-                    if c.is_pi {
-                        pi_staged.push(pushed.staged_rel);
-                    } else {
-                        claude_staged.push(pushed.staged_rel);
-                    }
+                    staged_by_agent
+                        .entry(c.agent)
+                        .or_default()
+                        .push(pushed.staged_rel);
                 }
             }
             Ok(None) => {} // file directly in source_dir (no session subdir) — skip
@@ -1152,9 +1038,7 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         }
     }
 
-    let pi_total = pi_staged.len();
-    let claude_total = claude_staged.len();
-    let all_staged: Vec<PathBuf> = pi_staged.into_iter().chain(claude_staged).collect();
+    let all_staged: Vec<PathBuf> = staged_by_agent.values().flatten().cloned().collect();
 
     if all_staged.is_empty() {
         println!("Nothing new to push (repo already up to date).");
@@ -1183,12 +1067,10 @@ pub fn push_impl(dry_run: bool, config_path: &Path, home: &Path) -> Result<()> {
         .context("failed to stage manifest")?;
 
     // Create sync commit.
-    let summary = git::SyncSummary {
-        new_files: total_new,
-        modified_files: total_modified,
-        pi_total,
-        claude_total,
-    };
+    let mut summary = git::SyncSummary::new(total_new, total_modified);
+    for (agent, staged) in &staged_by_agent {
+        summary = summary.with_agent_total(*agent, staged.len());
+    }
     let msg = git::format_sync_message(&machine_name, &now, &summary);
     manager
         .commit_if_staged(&msg, &machine_name)
@@ -1251,11 +1133,44 @@ struct ScannedChange {
     entry: scan::ScanEntry,
     /// Agent session directory that the file lives in.
     source_dir: PathBuf,
-    /// Repo-relative base path for this agent (`"pi/sessions"` or
-    /// `"claude/projects"`).
-    repo_rel_base: &'static str,
-    /// `true` for Pi; `false` for Claude.
-    is_pi: bool,
+    /// Registered adapter that owns this file.
+    agent: AgentId,
+}
+
+fn collect_scanned_changes(
+    adapters: &AdapterRegistry,
+    cfg: &config::Config,
+    home: &Path,
+    state_cache: &scan::StateCache,
+    follow_symlinks: bool,
+) -> Vec<ScannedChange> {
+    let mut changed = Vec::new();
+    for context in adapters
+        .contexts(&cfg.agents, home)
+        .into_iter()
+        .filter(|context| context.enabled)
+    {
+        if !context.session_dir.exists() {
+            continue;
+        }
+        match scan::scan_dir(&context.session_dir, state_cache, follow_symlinks) {
+            Ok(entries) => changed.extend(
+                entries
+                    .into_iter()
+                    .filter(|entry| entry.kind != scan::ChangeKind::Unchanged)
+                    .map(|entry| ScannedChange {
+                        entry,
+                        source_dir: context.session_dir.clone(),
+                        agent: context.metadata.id,
+                    }),
+            ),
+            Err(error) => eprintln!(
+                "  Warning: failed to scan {} sessions: {error}",
+                context.metadata.display_name
+            ),
+        }
+    }
+    changed
 }
 
 /// The result of processing one file during a push.
@@ -1281,12 +1196,10 @@ struct PushedFile {
 struct PushFileParams<'a> {
     entry: &'a scan::ScanEntry,
     source_dir: &'a Path,
-    /// E.g. `"pi/sessions"`.
-    repo_rel_base: &'a str,
+    adapter: &'a dyn AgentAdapter,
     repo_path: &'a Path,
     registry: &'a TokenRegistry,
     canon_level: u8,
-    is_pi: bool,
 }
 
 /// Canonicalize one changed local `.jsonl` file and write the merged result
@@ -1300,13 +1213,13 @@ fn process_push_file(p: &PushFileParams<'_>) -> Result<Option<PushedFile>> {
     let PushFileParams {
         entry,
         source_dir,
-        repo_rel_base,
+        adapter,
         repo_path,
         registry,
         canon_level,
-        is_pi,
     } = p;
-    let (is_pi, canon_level) = (*is_pi, *canon_level);
+    let canon_level = *canon_level;
+    let metadata = adapter.metadata();
 
     // Compute the relative path within source_dir.
     let rel_path = entry
@@ -1327,13 +1240,12 @@ fn process_push_file(p: &PushFileParams<'_>) -> Result<Option<PushedFile>> {
         return Ok(None);
     }
 
-    // L1: canonicalize the session directory name.
-    let canonical_dir = if is_pi {
-        registry.canonicalize_pi_dir(&session_dir_name)
-    } else {
-        registry.canonicalize_claude_dir(&session_dir_name)
-    };
-    let staged_rel = PathBuf::from(format!("{repo_rel_base}/{canonical_dir}/{file_name_str}"));
+    // L1: canonicalize the session directory name through its adapter.
+    let canonical_dir = adapter.canonicalize_dir(registry, &session_dir_name);
+    let staged_rel = PathBuf::from(format!(
+        "{}/{canonical_dir}/{file_name_str}",
+        metadata.repo_rel_base
+    ));
 
     // Read local file; skip on read error (§11.4 — permission errors).
     let raw = match fs::read_to_string(&entry.path) {
@@ -1718,40 +1630,29 @@ fn materialize_repo_to_local(
     }
 
     let filter = MaterializeFilter::from_config(cfg);
+    let adapters = AdapterRegistry::with_defaults();
     let mut total = 0usize;
 
-    if cfg.agents.pi.enabled {
-        let pi_sessions_repo = repo_path.join("pi").join("sessions");
-        if pi_sessions_repo.exists() {
-            let local_pi_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
+    for context in adapters
+        .contexts(&cfg.agents, home)
+        .into_iter()
+        .filter(|context| context.enabled)
+    {
+        let adapter = adapters
+            .get(context.metadata.id)
+            .expect("context has a registered adapter");
+        let repo_agent_dir = repo_path.join(context.metadata.repo_rel_base);
+        if repo_agent_dir.exists() {
             total += materialize_agent_dir(
-                &pi_sessions_repo,
-                &local_pi_dir,
+                &repo_agent_dir,
+                &context.session_dir,
                 registry,
-                true,
+                adapter,
                 &filter,
                 &mut cache,
-                "pi/sessions",
+                context.metadata.repo_rel_base,
             )
-            .context("Pi session materialization failed")?;
-        }
-    }
-
-    if cfg.agents.claude.enabled {
-        let claude_projects_repo = repo_path.join("claude").join("projects");
-        if claude_projects_repo.exists() {
-            let local_claude_dir =
-                config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
-            total += materialize_agent_dir(
-                &claude_projects_repo,
-                &local_claude_dir,
-                registry,
-                false,
-                &filter,
-                &mut cache,
-                "claude/projects",
-            )
-            .context("Claude project materialization failed")?;
+            .with_context(|| format!("{} materialization failed", context.metadata.display_name))?;
         }
     }
 
@@ -1761,54 +1662,6 @@ fn materialize_repo_to_local(
         .context("failed to save materialize cache")?;
 
     Ok(total)
-}
-
-/// Parse the ISO 8601 timestamp embedded in a Pi session filename.
-///
-/// Pi filenames use the format `YYYY-MM-DDTHH-MM-SS-mmmZ_<uuid>.jsonl`.
-/// Returns `None` if the filename does not match the expected pattern.
-fn pi_filename_timestamp(filename: &str) -> Option<DateTime<Utc>> {
-    // Strip the `.jsonl` suffix, then split off the UUID at the first `_`.
-    let stem = filename.strip_suffix(".jsonl")?;
-    let (ts_part, _uuid) = stem.split_once('_')?;
-
-    // ts_part: `YYYY-MM-DDTHH-MM-SS-mmmZ`
-    // Reconstruct as RFC 3339: `YYYY-MM-DDTHH:MM:SS.mmmZ`
-    let (date_part, time_part) = ts_part.split_once('T')?;
-    let mut segments = time_part.splitn(4, '-');
-    let hh = segments.next()?;
-    let mm = segments.next()?;
-    let ss = segments.next()?;
-    let ms_z = segments.next()?; // e.g. "642Z"
-    let ms = ms_z.strip_suffix('Z')?;
-    let rfc = format!("{date_part}T{hh}:{mm}:{ss}.{ms}Z");
-    DateTime::parse_from_rfc3339(&rfc)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
-}
-
-/// Determine the earliest entry timestamp in a JSONL file by reading it and
-/// inspecting each line's `timestamp`, `created_at`, or `createdAt` field.
-///
-/// Returns `None` if the file cannot be read or contains no recognisable
-/// timestamps.
-fn claude_earliest_file_timestamp(path: &Path) -> Option<DateTime<Utc>> {
-    let content = fs::read_to_string(path).ok()?;
-    content
-        .lines()
-        .filter(|l| !l.is_empty())
-        .filter_map(|line| {
-            let v: serde_json::Value = serde_json::from_str(line).ok()?;
-            for field in ["timestamp", "created_at", "createdAt"] {
-                if let Some(s) = v.get(field).and_then(|f| f.as_str()) {
-                    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-                        return Some(dt.with_timezone(&Utc));
-                    }
-                }
-            }
-            None
-        })
-        .min()
 }
 
 /// Given a slice of `(filename, full_repo_path)` pairs for `.jsonl` files in
@@ -1823,18 +1676,18 @@ fn claude_earliest_file_timestamp(path: &Path) -> Option<DateTime<Utc>> {
 fn select_partial_session_files(
     files: &[(String, PathBuf)],
     max_count: usize,
-    is_pi: bool,
+    adapter: &dyn AgentAdapter,
 ) -> HashSet<String> {
     // Build (timestamp_opt, filename) pairs.
     let mut scored: Vec<(Option<DateTime<Utc>>, &str)> = files
         .iter()
         .map(|(name, path)| {
-            let ts = if is_pi {
-                pi_filename_timestamp(name)
+            let artifact = if path.file_name().is_some() {
+                path.as_path()
             } else {
-                claude_earliest_file_timestamp(path)
+                Path::new(name)
             };
-            (ts, name.as_str())
+            (adapter.repository_artifact_recency(artifact), name.as_str())
         })
         .collect();
 
@@ -1869,7 +1722,7 @@ fn materialize_agent_dir(
     repo_agent_dir: &Path,
     local_base: &Path,
     registry: &TokenRegistry,
-    is_pi: bool,
+    adapter: &dyn AgentAdapter,
     filter: &MaterializeFilter,
     cache: &mut MaterializeCache,
     repo_rel_base: &str,
@@ -1894,11 +1747,7 @@ fn materialize_agent_dir(
         let canonical_dir_name = dir_entry.file_name().to_string_lossy().into_owned();
 
         // De-canonicalize the canonical dir name to the local agent-encoded form.
-        let local_dir_name = if is_pi {
-            registry.decanonicalize_pi_dir(&canonical_dir_name)
-        } else {
-            registry.decanonicalize_claude_dir(&canonical_dir_name)
-        };
+        let local_dir_name = adapter.decanonicalize_dir(registry, &canonical_dir_name);
         let local_session_dir = local_base.join(&local_dir_name);
 
         // Collect all .jsonl files in this session subdirectory.
@@ -1934,9 +1783,9 @@ fn materialize_agent_dir(
         // Apply partial history filter (§7).
         let selected: Option<HashSet<String>> = match filter {
             MaterializeFilter::Full => None, // all files selected
-            MaterializeFilter::Partial(max_count) => {
-                Some(select_partial_session_files(&all_files, *max_count, is_pi))
-            }
+            MaterializeFilter::Partial(max_count) => Some(select_partial_session_files(
+                &all_files, *max_count, adapter,
+            )),
         };
 
         for (filename, file_path) in &all_files {
@@ -2388,29 +2237,22 @@ fn emit_config_machine_section<W: io::Write>(
         }
     }
 
-    // Check each enabled agent's sessions directory.
-    if cfg.agents.pi.enabled {
-        let dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
-        if dir.exists() {
-            fmt.ok("Pi sessions", &dir.to_string_lossy())?;
+    // Check each enabled adapter's sessions directory.
+    for context in AdapterRegistry::with_defaults()
+        .contexts(&cfg.agents, home)
+        .into_iter()
+        .filter(|context| context.enabled)
+    {
+        if context.session_dir.exists() {
+            fmt.ok(
+                &format!("{} sessions", context.metadata.display_name),
+                &context.session_dir.to_string_lossy(),
+            )?;
         } else {
             let msg = format!(
-                "Pi agent enabled but sessions directory not found: {}",
-                dir.display()
-            );
-            config_errors.push(msg.clone());
-            fmt.err("Config", &msg)?;
-        }
-    }
-
-    if cfg.agents.claude.enabled {
-        let dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
-        if dir.exists() {
-            fmt.ok("Claude sessions", &dir.to_string_lossy())?;
-        } else {
-            let msg = format!(
-                "Claude agent enabled but sessions directory not found: {}",
-                dir.display()
+                "{} agent enabled but sessions directory not found: {}",
+                context.metadata.display_name,
+                context.session_dir.display()
             );
             config_errors.push(msg.clone());
             fmt.err("Config", &msg)?;
@@ -2429,24 +2271,18 @@ fn emit_config_machine_section<W: io::Write>(
             "  lock timeout   : {}s",
             cfg.general.lock_timeout_secs
         )?;
-        writeln!(
-            fmt.writer,
-            "  pi agent       : {}",
-            if cfg.agents.pi.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        )?;
-        writeln!(
-            fmt.writer,
-            "  claude agent   : {}",
-            if cfg.agents.claude.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        )?;
+        for context in AdapterRegistry::with_defaults().contexts(&cfg.agents, home) {
+            writeln!(
+                fmt.writer,
+                "  {:<15}: {}",
+                format!("{} agent", context.metadata.id),
+                if context.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            )?;
+        }
     }
 
     // Porcelain keys for the Config / Machine section.
@@ -2519,35 +2355,19 @@ fn emit_pending_files_section<W: io::Write>(
     let mut pending_paths: Vec<(PathBuf, PathBuf)> = Vec::new(); // (source_dir, abs_path)
     let follow_symlinks = cfg.general.follow_symlinks;
 
-    if cfg.agents.pi.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
-        if source_dir.exists() {
-            if let Ok(entries) = scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                for e in entries
-                    .into_iter()
-                    .filter(|e| e.kind != scan::ChangeKind::Unchanged)
-                {
-                    pending_count += 1;
-                    if verbose {
-                        pending_paths.push((source_dir.clone(), e.path));
-                    }
-                }
-            }
-        }
-    }
-
-    if cfg.agents.claude.enabled {
-        let source_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
-        if source_dir.exists() {
-            if let Ok(entries) = scan::scan_dir(&source_dir, &state_cache, follow_symlinks) {
-                for e in entries
-                    .into_iter()
-                    .filter(|e| e.kind != scan::ChangeKind::Unchanged)
-                {
-                    pending_count += 1;
-                    if verbose {
-                        pending_paths.push((source_dir.clone(), e.path));
-                    }
+    for context in AdapterRegistry::with_defaults()
+        .contexts(&cfg.agents, home)
+        .into_iter()
+        .filter(|context| context.enabled && context.session_dir.exists())
+    {
+        if let Ok(entries) = scan::scan_dir(&context.session_dir, &state_cache, follow_symlinks) {
+            for entry in entries
+                .into_iter()
+                .filter(|entry| entry.kind != scan::ChangeKind::Unchanged)
+            {
+                pending_count += 1;
+                if verbose {
+                    pending_paths.push((context.session_dir.clone(), entry.path));
                 }
             }
         }
@@ -2754,14 +2574,9 @@ fn run_doctor_checks(config_path: &Path, home: &Path) -> DoctorCheckResults {
                 doctor::ssh_agent_available,
             );
 
-            let pi_dir = config::expand_path_with_home(&cfg.agents.pi.session_dir, home);
-            let claude_dir = config::expand_path_with_home(&cfg.agents.claude.session_dir, home);
-            let agents = doctor::check_agents(
-                cfg.agents.pi.enabled,
-                &pi_dir,
-                cfg.agents.claude.enabled,
-                &claude_dir,
-            );
+            let adapters = AdapterRegistry::with_defaults();
+            let contexts = adapters.contexts(&cfg.agents, home);
+            let agents = doctor::check_agent_contexts(&contexts);
 
             let crontab_lines = scheduler_cron::crontab_read().unwrap_or_default();
             let lock_path = lock_file_path(&repo_path);
@@ -4303,61 +4118,6 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    fn pi_filename_timestamp_parses_valid_name() {
-        use chrono::Timelike as _;
-        let ts = pi_filename_timestamp(
-            "2026-02-17T03-39-53-642Z_af036bd6-3fa8-492b-a656-93d5bbbd6878.jsonl",
-        );
-        assert!(ts.is_some(), "should parse a valid Pi filename timestamp");
-        let ts = ts.unwrap();
-        // Check date/time components — avoids a fragile hardcoded Unix timestamp.
-        assert_eq!(ts.date_naive().to_string(), "2026-02-17");
-        assert_eq!(ts.hour(), 3);
-        assert_eq!(ts.minute(), 39);
-        assert_eq!(ts.second(), 53);
-    }
-
-    #[test]
-    fn pi_filename_timestamp_returns_none_for_non_pi_name() {
-        // Claude-style UUID filename — no embedded timestamp
-        assert!(pi_filename_timestamp("8f6009e7-c052-4d98-b792-5f6c3bbbd8f9.jsonl").is_none());
-        // No underscore separator
-        assert!(pi_filename_timestamp("session.jsonl").is_none());
-        // Wrong suffix
-        assert!(pi_filename_timestamp("2026-02-17T03-39-53-642Z_uuid.json").is_none());
-    }
-
-    #[test]
-    fn claude_earliest_file_timestamp_finds_min() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("session.jsonl");
-        // Three entries — earliest is m1 at 2024-01-01
-        std::fs::write(
-            &path,
-            r#"{"type":"message","id":"m2","timestamp":"2024-06-15T12:00:00Z"}
-{"type":"session","id":"s1","timestamp":"2024-01-01T00:00:00Z"}
-{"type":"message","id":"m3","timestamp":"2025-03-10T08:30:00Z"}
-"#,
-        )
-        .unwrap();
-        let ts = claude_earliest_file_timestamp(&path);
-        assert!(ts.is_some());
-        assert_eq!(
-            ts.unwrap().to_rfc3339(),
-            "2024-01-01T00:00:00+00:00",
-            "earliest timestamp should be selected"
-        );
-    }
-
-    #[test]
-    fn claude_earliest_file_timestamp_returns_none_for_no_timestamps() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("session.jsonl");
-        std::fs::write(&path, r#"{"type":"message","id":"m1"}"#).unwrap();
-        assert!(claude_earliest_file_timestamp(&path).is_none());
-    }
-
-    #[test]
     fn select_partial_session_files_pi_keeps_newest() {
         // Build three Pi-style filenames with different timestamps.
         let files: Vec<(String, PathBuf)> = vec![
@@ -4375,7 +4135,7 @@ mod tests {
             ),
         ];
         // Keep 2 most recent.
-        let selected = select_partial_session_files(&files, 2, true);
+        let selected = select_partial_session_files(&files, 2, &crate::adapters::PiAdapter);
         assert_eq!(selected.len(), 2);
         // Newest two should be 2026 and 2025.
         assert!(selected
@@ -4392,7 +4152,7 @@ mod tests {
             "2026-01-01T00-00-00-000Z_aaaaaaaa-0000-0000-0000-000000000001.jsonl".to_owned(),
             PathBuf::new(),
         )];
-        let selected = select_partial_session_files(&files, 100, true);
+        let selected = select_partial_session_files(&files, 100, &crate::adapters::PiAdapter);
         assert_eq!(
             selected.len(),
             1,
@@ -4433,7 +4193,7 @@ mod tests {
             &repo_agent_dir,
             &local_base,
             &registry,
-            true,
+            &crate::adapters::PiAdapter,
             &MaterializeFilter::Full,
             &mut cache,
             "pi/sessions",
@@ -4476,7 +4236,7 @@ mod tests {
             &repo_agent_dir,
             &local_base,
             &registry,
-            true,
+            &crate::adapters::PiAdapter,
             &MaterializeFilter::Partial(2),
             &mut cache,
             "pi/sessions",
@@ -4825,7 +4585,7 @@ mod tests {
             &repo_agent_dir,
             &local_base,
             &registry,
-            true,
+            &crate::adapters::PiAdapter,
             &MaterializeFilter::Partial(1),
             &mut cache,
             "pi/sessions",
