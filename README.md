@@ -42,13 +42,15 @@ CRDT (set-union), preserving the append-only invariant of JSONL session data. Se
 [Storage Backends](docs/references/002-storage-backends.md) for why Git was chosen
 over alternatives.
 
+**Current release:** 0.9.0 (`chronicle --version`)
+
 ## Features
 
 - **Cross-machine sync** - Session history follows you between machines with different `$HOME` paths
 - **Path canonicalization** - `$HOME` paths are replaced with `{{SYNC_HOME}}` tokens, with configurable canonicalization levels (paths, structured fields, freeform text)
 - **CRDT merge** - Grow-only set merge ensures no session data is ever lost, even with concurrent edits on different machines
 - **Partial materialization** - Pull only the N most recent sessions per project, while the Git repo retains complete history
-- **Agent-agnostic** - Supports Pi and Claude Code with extensible agent architecture
+- **Adapter registry** - A deterministic Pi/Claude registry supplies agent-specific roots, repository layout, directory codecs, artifact validation, and partial-history recency while sync coordination stays shared ([Spec 011](docs/specs/011-agent-adapter.md))
 - **Stateless CLI** — No daemon; a simple CLI invoked by cron on a configurable schedule
 - **Rich `status` command** — Human-friendly (✓/⚠/✗) and machine-readable (`--porcelain`) output covering last-sync time/duration/operation, pending-file count, lock state, scheduler health, and per-agent sessions-dir existence; `--verbose` expands file lists and effective config values
 - **`doctor` command** — Pre-flight health check across Config, Git, Agents, and Scheduler subsystems; plain-English remediation hints; `--porcelain` for scripting; exit codes 0/1/2 (pass/warn/error)
@@ -409,7 +411,8 @@ Detailed documentation lives in the [`docs/`](docs/) directory:
 | Architecture | [`docs/001-architecture.md`](docs/001-architecture.md) | System design and key decisions |
 | Development Guide | [`docs/002-development-guide.md`](docs/002-development-guide.md) | How to develop, test, and contribute |
 | Doc Standards | [`docs/003-documentation-standards.md`](docs/003-documentation-standards.md) | How docs are structured and maintained |
-| Specs | [`docs/specs/`](docs/specs/) | Feature specifications and design docs |
+| Specs | [`docs/specs/`](docs/specs/) | Feature specifications and implementation records |
+| - Agent Adapters | [`docs/specs/011-agent-adapter.md`](docs/specs/011-agent-adapter.md) | Implemented Pi/Claude adapter registry |
 | ADRs | [`docs/adrs/`](docs/adrs/) | Architecture Decision Records |
 | References | [`docs/references/`](docs/references/) | CLI reference, config reference, glossary |
 | - Encryption | [`docs/references/001-encryption.md`](docs/references/001-encryption.md) | Encryption options, tradeoffs, and setup |

@@ -6,6 +6,7 @@ audience: both
 cross_references:
   - docs/002-development-guide.md
   - docs/specs/001-initial-delivery.md
+  - docs/specs/011-agent-adapter.md
   - AGENTS.md
 ---
 
@@ -55,19 +56,21 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 ### Outgoing (Local → Git Remote)
 
 1. Cron fires `chronicle sync`
-2. Scanner detects changed `.jsonl` files via mtime/size cache
-3. Canonicalizer replaces `$HOME` paths with `{{SYNC_HOME}}` (L1 paths + L2 whitelisted fields)
-4. Merger performs set-union if file exists in repo
-5. Git module commits and pushes
+2. `AdapterRegistry` resolves enabled Pi/Claude contexts, their effective session roots, and repository bases
+3. Scanner detects changed `.jsonl` files via mtime/size cache; the matching adapter validates each artifact and derives its repository path
+4. Canonicalizer replaces `$HOME` paths with `{{SYNC_HOME}}` (L1 paths + L2 whitelisted fields)
+5. Merger performs set-union if file exists in repo
+6. Git module commits and pushes
 
 ### Incoming (Git Remote → Local)
 
 1. Git module fetches from remote
 2. Merger resolves any divergent entries (set-union, remote-wins for conflicts)
-3. Partial history filter limits materialization to N most recent files per directory
-4. `MaterializeCache` skips repo files whose mtime/size match the last-materialized state
-5. De-canonicalizer replaces `{{SYNC_HOME}}` with local `$HOME`
-6. Files written to agent session directories with preserved permissions
+3. `AdapterRegistry` iterates enabled repository bases and supplies provider-specific directory decoding and recency policy
+4. Partial history filter limits materialization to N most recent files per directory
+5. `MaterializeCache` skips repo files whose mtime/size match the last-materialized state
+6. De-canonicalizer replaces `{{SYNC_HOME}}` with local `$HOME`
+7. Files written to agent session directories with preserved permissions
 
 ## Key Design Decisions
 
@@ -79,6 +82,7 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 | `{{SYNC_HOME}}` token | Visually distinct, doesn't conflict with shell/markdown/regex | — |
 | Cron for scheduling | Single cross-platform code path for macOS + Linux, zero build complexity; entries inject `SSH_AUTH_SOCK` for agent visibility | — |
 | `git2` (libgit2) over CLI | No system git dependency, programmatic error handling, explicit SSH agent credentials callback | — |
+| Deterministic adapter registry | Keep Pi/Claude storage policies at a narrow extension boundary without provider branches in lifecycle orchestration | [Spec 011](specs/011-agent-adapter.md) |
 
 > For detailed decision records, see [`docs/adrs/`](adrs/).
 

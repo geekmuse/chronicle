@@ -8,8 +8,8 @@
 - **Name:** chronicle
 - **Language:** Rust
 - **Purpose:** Synchronize Pi and Claude Code session history across machines where `$HOME` paths differ, using path canonicalization and Git as the storage/transport backend
-- **Current Version:** 0.5.0
-- **Status:** Stable (v0.5.0)
+- **Current Version:** 0.9.0
+- **Status:** Alpha (v0.9.0)
 
 ## Quick Start — Quality Checks
 
@@ -79,7 +79,8 @@ chronicle/
 │   │   ├── 002-status-improvements.md  # Rich status command (v0.6.0)
 │   │   ├── 003-l3-canonicalization-hardening.md  # Fuzz + proptest hardening (v0.7.0)
 │   │   ├── 004-doctor-command.md    # chronicle doctor pre-flight health check (v0.8.0)
-│   │   └── 010-fuzzing-hardening.md # Persistent multi-target fuzzing
+│   │   ├── 010-fuzzing-hardening.md # Persistent multi-target fuzzing
+│   │   └── 011-agent-adapter.md     # Implemented Pi/Claude adapter registry (v0.9.0)
 │   ├── adrs/                        # Architecture Decision Records
 │   │   └── 001-stale-lock-recovery.md # Stale lock recovery after sleep/suspend
 │   ├── references/                  # CLI reference, config reference
@@ -110,8 +111,10 @@ chronicle/
 │   │   ├── mod.rs                   # Repo init, working tree management
 │   │   ├── fetch_push.rs            # Fetch, push with retry + backoff
 │   │   └── commit.rs                # Staging, commit message formatting
+│   ├── adapters/                    # Pi/Claude registry, path codecs, artifact validation
+│   │   └── mod.rs
 │   ├── agents/
-│   │   └── mod.rs                   # Pi and Claude dir encoding / file naming
+│   │   └── mod.rs                   # Deprecated Pi/Claude codec compatibility API
 │   ├── doctor/
 │   │   └── mod.rs                   # CheckState/CheckResult types; check_config/git/agents/scheduler
 │   ├── scheduler/                   # Cron scheduling
@@ -335,7 +338,7 @@ When investigating a tool, approach, or pattern:
 - [x] Canonicalization engine (L1 paths, L2 whitelisted fields, token registry)
 - [x] Merge module (entry parsing, set-union, prefix verification)
 - [x] Git module (repo init, fetch/push with retry, commit formatting)
-- [x] Agent modules (Pi and Claude directory encoding / file naming)
+- [x] Agent codec compatibility API (Pi and Claude directory encoding / file naming)
 - [x] CLI commands (init, import, sync, push, pull, status, errors, config, schedule)
 - [x] Scanner (mtime/size change detection)
 - [x] Scheduler (crontab install/uninstall/status)
@@ -365,3 +368,7 @@ When investigating a tool, approach, or pattern:
       status/doctor stale-lock splits dead-PID (Warn, lock_state=stale) from
       live-PID-past-timeout (Err, lock_state=hung); SyncLockGuard RAII type
       deletes chronicle.lock on clean sync exit so status/doctor show free not stale
+- [x] Agent adapter registry (v0.9.0): `AdapterRegistry` resolves deterministic Pi/Claude
+      contexts for import, sync, push, materialization, status, and doctor; adapters own
+      repository roots, directory codecs, artifact validation, and recency policy while the
+      CLI retains shared scanning, canonicalization, merge, cache, lock, and Git behavior.
