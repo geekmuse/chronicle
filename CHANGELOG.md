@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-01
+
 ### Added
-- **Adapter registry (v0.9.0)** — Sync, import, materialization, status, and doctor now
+- **Adapter registry** — Sync, import, materialization, status, and doctor now
   dispatch through a deterministic Pi/Claude adapter registry. Both built-in agents retain
   their established directory codecs and JSONL behavior; the new end-to-end parity test
-  verifies both agents materialize correctly across different home directories.
+  verifies both agents materialize correctly across different home directories. The public
+  `Agent`, `PiAgent`, and `ClaudeAgent` codec API remains available but is deprecated in
+  favor of `AgentAdapter` through `AdapterRegistry`.
 - **Persistent multi-target fuzzing** — Added `fuzz_canon_structured` with independent
   L2/L3 replacement, whitelist-isolation, boundary, idempotence, custom-token, and
   cross-machine oracles; added `fuzz_merge` for JSONL union, uniqueness, malformed-line,

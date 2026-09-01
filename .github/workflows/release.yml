@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v0.8.4) — overrides GITHUB_REF_NAME when dispatched manually'
+        description: 'Tag to release (e.g. v0.9.0) — overrides GITHUB_REF_NAME when dispatched manually'
         required: true
         default: ''
 
