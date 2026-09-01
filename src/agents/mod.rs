@@ -18,6 +18,10 @@ use crate::errors::ChronicleError;
 // ── Agent trait ───────────────────────────────────────────────────────────────
 
 /// Behaviour required of every supported agent module.
+///
+/// Deprecated: use [`crate::adapters::AgentAdapter`] through
+/// [`crate::adapters::AdapterRegistry`] for new sync code.
+#[deprecated(note = "use adapters::AgentAdapter via adapters::AdapterRegistry instead")]
 pub trait Agent {
     /// Returns the root directory where this agent stores session
     /// subdirectories, given the current user's home directory.
@@ -63,8 +67,12 @@ pub trait Agent {
 /// 3. Wrap the result with `--` on both sides.
 ///
 /// `/Users/bradmatic/Dev/foo` → `--Users-bradmatic-Dev-foo--`
+///
+/// Deprecated: use [`crate::adapters::PiAdapter`] for new sync code.
+#[deprecated(note = "use adapters::PiAdapter instead")]
 pub struct PiAgent;
 
+#[allow(deprecated)]
 impl Agent for PiAgent {
     fn session_dir(&self, home: &Path) -> PathBuf {
         home.join(".pi").join("agent").join("sessions")
@@ -106,8 +114,12 @@ impl Agent for PiAgent {
 /// 3. Prefix the result with a single `-`.
 ///
 /// `/Users/bradmatic/Dev/foo` → `-Users-bradmatic-Dev-foo`
+///
+/// Deprecated: use [`crate::adapters::ClaudeAdapter`] for new sync code.
+#[deprecated(note = "use adapters::ClaudeAdapter instead")]
 pub struct ClaudeAgent;
 
+#[allow(deprecated)]
 impl Agent for ClaudeAgent {
     fn session_dir(&self, home: &Path) -> PathBuf {
         home.join(".claude").join("projects")
@@ -168,6 +180,7 @@ impl Agent for ClaudeAgent {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

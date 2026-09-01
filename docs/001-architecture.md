@@ -1,6 +1,6 @@
 ---
 date_created: 2026-03-29
-date_modified: 2026-03-30
+date_modified: 2026-09-01
 status: active
 audience: both
 cross_references:
@@ -43,7 +43,8 @@ Chronicle is a Rust CLI tool that synchronizes AI coding agent session history (
 | Canonicalization | Replace machine-specific `$HOME` paths with `{{SYNC_HOME}}` token and reverse | `src/canon/` |
 | Merge | Grow-only set merge of JSONL session entries | `src/merge/` |
 | Git | Repo init, fetch, push with retry, commit formatting, SSH/HTTPS credential callbacks | `src/git/` |
-| Agents | Pi and Claude-specific directory encoding and file naming | `src/agents/` |
+| Adapters | Registry-driven Pi and Claude session roots, repository layout, directory codecs, and JSONL artifact validation | `src/adapters/` |
+| Agents | Deprecated Pi and Claude codec compatibility API | `src/agents/` |
 | Scheduler | Crontab installation and management | `src/scheduler/` |
 | Scan | File change detection via mtime/size cache (`state.json`) | `src/scan/` |
 | MaterializeCache | Repo-file mtime/size cache for materialize fast-path; invalidated on config change (`materialize-state.json`) | `src/materialize_cache.rs` |

@@ -411,15 +411,48 @@ fn count_jsonl_files(dir: &Path) -> usize {
 // check_agents
 // ---------------------------------------------------------------------------
 
-/// Check each enabled agent's session directory.
+/// Check every registered agent context's session directory.
 ///
-/// Returns one [`CheckResult`] per agent (both Pi and Claude), using
-/// [`CheckState::Skipped`] for disabled agents.
+/// The contexts should come from [`crate::adapters::AdapterRegistry::contexts`],
+/// which keeps this check independent of a hard-coded list of agents. Result
+/// ordering follows the registry's stable order; each result key remains the
+/// adapter's configuration key (such as `agents.pi`).
+#[must_use]
+pub fn check_agent_contexts(contexts: &[crate::adapters::AgentContext]) -> Vec<CheckResult> {
+    contexts
+        .iter()
+        .map(|context| {
+            let key = context.metadata.config_key;
+            if !context.enabled {
+                return CheckResult::skipped(key, "agent disabled in config");
+            }
+            if context.session_dir.exists() {
+                let count = count_jsonl_files(&context.session_dir);
+                CheckResult::pass(
+                    key,
+                    format!(
+                        "{count} session file(s) in {}",
+                        context.session_dir.display()
+                    ),
+                )
+            } else {
+                CheckResult::error(
+                    key,
+                    format!(
+                        "sessions directory not found: {}",
+                        context.session_dir.display()
+                    ),
+                    format!("create the directory or update `{key}.session_dir` in config"),
+                )
+            }
+        })
+        .collect()
+}
+
+/// Check each enabled built-in agent's session directory.
 ///
-/// | Key             | What is checked |
-/// |-----------------|----------------|
-/// | `agents.pi`     | Pi session directory exists; file count on pass |
-/// | `agents.claude` | Claude session directory exists; file count on pass |
+/// This compatibility wrapper preserves the original Pi/Claude API and
+/// output while CLI call sites migrate to [`check_agent_contexts`].
 #[must_use]
 pub fn check_agents(
     pi_enabled: bool,
@@ -427,59 +460,31 @@ pub fn check_agents(
     claude_enabled: bool,
     claude_session_dir: &Path,
 ) -> Vec<CheckResult> {
-    let mut results = Vec::with_capacity(2);
+    use crate::adapters::{AgentContext, AgentId, AgentMetadata};
 
-    // --- agents.pi ---------------------------------------------------------
-    if pi_enabled {
-        if pi_session_dir.exists() {
-            let count = count_jsonl_files(pi_session_dir);
-            results.push(CheckResult::pass(
-                "agents.pi",
-                format!("{count} session file(s) in {}", pi_session_dir.display()),
-            ));
-        } else {
-            results.push(CheckResult::error(
-                "agents.pi",
-                format!("sessions directory not found: {}", pi_session_dir.display()),
-                "create the directory or update `agents.pi.session_dir` in config",
-            ));
-        }
-    } else {
-        results.push(CheckResult::skipped(
-            "agents.pi",
-            "agent disabled in config",
-        ));
-    }
-
-    // --- agents.claude -----------------------------------------------------
-    if claude_enabled {
-        if claude_session_dir.exists() {
-            let count = count_jsonl_files(claude_session_dir);
-            results.push(CheckResult::pass(
-                "agents.claude",
-                format!(
-                    "{count} session file(s) in {}",
-                    claude_session_dir.display()
-                ),
-            ));
-        } else {
-            results.push(CheckResult::error(
-                "agents.claude",
-                format!(
-                    "sessions directory not found: {}",
-                    claude_session_dir.display()
-                ),
-                "create the directory or update `agents.claude.session_dir` in config",
-            ));
-        }
-    } else {
-        results.push(CheckResult::skipped(
-            "agents.claude",
-            "agent disabled in config",
-        ));
-    }
-
-    results
+    let contexts = [
+        AgentContext {
+            metadata: AgentMetadata {
+                id: AgentId::Pi,
+                display_name: "Pi",
+                config_key: "agents.pi",
+                repo_rel_base: "pi/sessions",
+            },
+            enabled: pi_enabled,
+            session_dir: pi_session_dir.to_path_buf(),
+        },
+        AgentContext {
+            metadata: AgentMetadata {
+                id: AgentId::Claude,
+                display_name: "Claude",
+                config_key: "agents.claude",
+                repo_rel_base: "claude/projects",
+            },
+            enabled: claude_enabled,
+            session_dir: claude_session_dir.to_path_buf(),
+        },
+    ];
+    check_agent_contexts(&contexts)
 }
 
 // ---------------------------------------------------------------------------
@@ -907,6 +912,34 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].state, CheckState::Skipped);
         assert_eq!(results[1].state, CheckState::Skipped);
+    }
+
+    #[test]
+    fn check_agent_contexts_uses_adapter_metadata_and_order() {
+        use crate::adapters::{AdapterRegistry, AgentId};
+        use crate::config::schema::AgentsConfig;
+
+        let dir = TempDir::new().unwrap();
+        let mut contexts =
+            AdapterRegistry::with_defaults().contexts(&AgentsConfig::default(), dir.path());
+        let pi = contexts
+            .iter_mut()
+            .find(|context| context.metadata.id == AgentId::Pi)
+            .unwrap();
+        pi.enabled = false;
+        let claude = contexts
+            .iter_mut()
+            .find(|context| context.metadata.id == AgentId::Claude)
+            .unwrap();
+        claude.session_dir = dir.path().join("claude");
+        fs::create_dir_all(&claude.session_dir).unwrap();
+
+        let results = check_agent_contexts(&contexts);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].key, "agents.pi");
+        assert_eq!(results[0].state, CheckState::Skipped);
+        assert_eq!(results[1].key, "agents.claude");
+        assert_eq!(results[1].state, CheckState::Pass);
     }
 
     // -----------------------------------------------------------------------

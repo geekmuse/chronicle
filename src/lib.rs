@@ -27,6 +27,7 @@
 //! modules are re-exported as `pub` so the integration-test crate can
 //! import the testable `*_impl` helpers directly.
 
+pub mod adapters;
 pub mod agents;
 pub mod canon;
 pub mod cli;
