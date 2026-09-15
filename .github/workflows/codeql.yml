@@ -11,21 +11,23 @@ on:
   schedule:
     - cron: '0 3 * * 1'   # weekly, Monday 03:00 UTC
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write   # retained for future CodeQL support if Rust lands
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # The tagged rustsec/audit-check action uses deprecated Node 20 and
+      # publishes a redundant Checks API result that read-only Dependabot
+      # tokens cannot create. The workflow job itself provides the check.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
       - name: Run cargo audit
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998  # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit
